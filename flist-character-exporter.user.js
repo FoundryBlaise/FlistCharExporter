@@ -4,6 +4,7 @@
 // @version      1.0.0
 // @description  Export and import F-list character profiles as JSON/ZIP files
 // @author       Foundry Blaise
+// @license      MIT
 // @match        https://www.f-list.net/character_edit.php*
 // @grant        GM_xmlhttpRequest
 // @connect      static.f-list.net
