@@ -182,7 +182,12 @@
   // ===== DIAGNOSTIC BUILD =====
   // Heavy console logging behind a single prefix so the user can grab
   // the block with Ctrl+F. Does NOT change apply behavior.
-  const DIAG_PREFIX = '[F-list Workbench DIAG]';
+  // Build identifier — updated on each push so the user can confirm in
+  // console which commit they're actually running (browser cache, CDN
+  // staleness, "did I really click Reload?" — all easier to rule out
+  // when the hash is right there in the diag header).
+  const EXT_BUILD = '7083747';
+  const DIAG_PREFIX = `[F-list Workbench DIAG @ ${EXT_BUILD}]`;
   function diag(...args) { console.log(DIAG_PREFIX, ...args); }
   function diagGroup(title) { console.group(DIAG_PREFIX + ' ' + title); }
   function diagGroupEnd() { console.groupEnd(); }
@@ -977,6 +982,41 @@
       progress.setRatio(0);
       result = await applyCharacterData(data);
 
+      // Avatar processing runs regardless of skipImages — avatar is a
+      // profile aspect (not a gallery change), and users who skip gallery
+      // changes still want the new character's avatar applied.
+      diag('===BEGIN AVATAR DIAGNOSTICS===');
+      diag('outcome=', outcome, 'skipImages=', skipImages);
+      diag('data.images.avatar =', JSON.stringify(data?.images?.avatar));
+      diag('zip present?', !!zip);
+      if (zip) {
+        const zipFileList = Object.keys(zip.files).slice(0, 20);
+        diag('zip files (first 20):', JSON.stringify(zipFileList));
+      }
+      const avatarFn = data?.images?.avatar?.filename;
+      const avatarFile = zip && avatarFn ? zip.file(avatarFn) : null;
+      diag('avatar filename from payload:', avatarFn, 'found in zip?', !!avatarFile);
+      if (outcome === 'cancelled') {
+        diag('SKIP avatar: cancelled');
+      } else if (!avatarFn) {
+        diag('SKIP avatar: no filename in payload');
+      } else if (!zip) {
+        diag('SKIP avatar: zip is null (JSON-only restore?)');
+      } else if (!avatarFile) {
+        diag('SKIP avatar: filename "' + avatarFn + '" not in ZIP — sidecar didn\'t bundle avatar bytes');
+      } else {
+        progress.update('Uploading avatar…');
+        try {
+          const bytes = await avatarFile.async('uint8array');
+          diag('avatar bytes loaded:', bytes.length, 'bytes');
+          await uploadAvatarBytes(bytes, avatarFn.split('/').pop());
+        } catch (e) {
+          diag('avatar processing threw:', String(e && e.message || e));
+          warn('avatar upload failed', e);
+        }
+      }
+      diag('===END AVATAR===');
+
       if (!skipImages) {
         const current = extractImageData();
         const backupImages = data?.images?.list || [];
@@ -991,38 +1031,6 @@
             await deleteImageById(willDelete[i].id);
             counts.deleted++;
           } catch (e) { warn('delete failed', willDelete[i].id, e); }
-        }
-
-        if (outcome !== 'cancelled') {
-          diag('===BEGIN AVATAR DIAGNOSTICS===');
-          diag('avatar block reached, outcome=', outcome);
-          diag('data.images.avatar =', JSON.stringify(data?.images?.avatar));
-          diag('zip present?', !!zip);
-          if (zip) {
-            const zipFileList = Object.keys(zip.files).slice(0, 20);
-            diag('zip files (first 20):', JSON.stringify(zipFileList));
-          }
-          const avatarFn = data?.images?.avatar?.filename;
-          const avatarFile = zip && avatarFn ? zip.file(avatarFn) : null;
-          diag('avatar filename from payload:', avatarFn, 'found in zip?', !!avatarFile);
-          if (!avatarFn) {
-            diag('SKIP avatar: no filename in payload');
-          } else if (!zip) {
-            diag('SKIP avatar: zip is null (JSON-only restore?)');
-          } else if (!avatarFile) {
-            diag('SKIP avatar: filename "' + avatarFn + '" not in ZIP — sidecar didn\'t bundle avatar bytes');
-          } else {
-            progress.update('Uploading avatar…');
-            try {
-              const bytes = await avatarFile.async('uint8array');
-              diag('avatar bytes loaded:', bytes.length, 'bytes');
-              await uploadAvatarBytes(bytes, avatarFn.split('/').pop());
-            } catch (e) {
-              diag('avatar processing threw:', String(e && e.message || e));
-              warn('avatar upload failed', e);
-            }
-          }
-          diag('===END AVATAR===');
         }
 
         if (outcome !== 'cancelled') {
