@@ -13,7 +13,8 @@ Thumbs.db
 *.log
 
 # Exported character files
-*.json
+flist_*.json
+flist_*.zip
 
 # Node (if we add build tools later)
 node_modules/

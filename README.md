@@ -1,74 +1,113 @@
-# F-list Character Exporter
+# F-list Workbench Browser Extension
 
-A userscript to export and import F-list character profiles as ZIP files, including images.
+Browser extension that lets you restore F-list character backups from
+[F-list Workbench](https://github.com/FoundryBlaise/flist-workbench) directly
+on the F-list character edit page. Also imports from local ZIP files
+exported by Workbench or the legacy userscript.
 
-## Features
+**This extension never clicks Save for you.** It fills the form, scrolls
+to F-list's own Save button, and stops. You review every field and click
+Save yourself.
 
-- Export character profiles with all data (description, settings, kinks, custom kinks)
-- Include character images and inline images in exports (inlines must be restored manually)
-- Import backups to restore or copy characters
-- Selective import - choose which parts to restore
-- Safety warnings for destructive operations
+## How it works
 
-## Installation
+1. Sign in to F-list normally in your browser. Open
+   `https://www.f-list.net/character_edit.php?character=<name>`.
+2. The extension injects an **F-list Workbench** bar at the top of the
+   edit form with two buttons:
+   - **Import from Workbench** — lists working copy + backup snapshots
+     stored in your local Workbench app; pick one, get a safety screen,
+     then Apply.
+   - **Import from ZIP file** — load a Workbench-exported `.zip` from
+     disk (also reads the legacy userscript's `.zip` format).
+3. The safety screen tells you exactly what's about to change. Image
+   add/remove operations happen **immediately** on Apply because F-list's
+   image API does not wait for Save. Form fields (description, kinks,
+   infotags, settings, custom kinks) only persist when you click Save.
+4. On Apply: form is filled, gallery is synced (if you didn't skip
+   images), page scrolls to F-list's Save button. You click Save.
 
-1. Install [Violentmonkey](https://violentmonkey.github.io/) or [Tampermonkey](https://www.tampermonkey.net/)
-2. [Click here to install the script](https://github.com/FoundryBlaise/FlistCharExporter/raw/main/flist-character-exporter.user.js)
-3. Confirm the installation when prompted
+## Pairing
 
-## Usage
+The extension talks to Workbench's local sidecar at `127.0.0.1:8765`
+using a per-install auth token. First use:
 
-### Exporting a Character
+1. Start the F-list Workbench app.
+2. Click the extension's toolbar icon → **Pair with Workbench**.
+3. Workbench shows an Accept-this-extension modal. Click **Accept**.
 
-1. Go to your character's page and click **Edit**
+The token is stored in the extension and persists across browser
+restarts. You can rotate or revoke it from Workbench: **Settings →
+Security → Rotate pairing token**, or from this popup → **Unpair**.
 
-   ![Edit button](images/1.png)
+The token only authorizes reading backup snapshots and posting a
+form-state snapshot — it does not let any party drive your F-list
+session. F-list cookies stay in your normal browser, untouched.
 
-2. On the edit page, click **Export Character** in the top-right corner
+## Install (Chrome / Chromium / Edge — Developer mode)
 
-   ![Export and Import buttons](images/2.png)
+1. Open `chrome://extensions`.
+2. Toggle **Developer mode** (top right).
+3. **Load unpacked** → pick this folder (`FlistCharExporter/`).
+4. Pin the extension to the toolbar for easy pairing.
 
-3. Choose what to include in your export and click **Export ZIP**
+## Install (Firefox — unsigned, temporary)
 
-   ![Export dialog](images/3.png)
+1. Open `about:debugging#/runtime/this-firefox`.
+2. **Load Temporary Add-on…** → pick `manifest.json` in this folder.
+3. The temp install persists until Firefox restarts; signed XPI
+   distribution is the long-term path.
 
-### Importing a Character
+A signed `.xpi` for permanent install on Firefox release is forthcoming.
 
-1. On any character edit page, click **Import Character**
-2. Select your previously exported ZIP file
-3. Choose which parts to import
+## What gets restored
 
-   ![Import dialog](images/4.png)
+| Category | Behavior |
+| --- | --- |
+| Description, custom title | Filled in the form, persists on Save |
+| Settings (public, timezone, etc.) | Filled in the form, persists on Save |
+| Infotags (profile fields) | Filled in the form, persists on Save |
+| Kinks (fetish preferences) | Filled in the form, persists on Save |
+| Custom kinks | Filled in the form, persists on Save |
+| Avatar | Uploaded immediately (not gated by Save) |
+| Gallery images | Deleted/uploaded immediately (not gated by Save) |
 
-4. If replacing images, you'll need to confirm the destructive action. **F-List instantly deletes images when you remove them in the editor!**
+**Skip image changes** in the safety screen if you only want the form
+fields touched.
 
-   ![Clear images warning](images/5.png)
+## "Back up first" option
 
-5. The script warns you if the backup is for a different character
+Before applying a restore, you can click **Back up current state first**.
+The extension extracts the current form contents and POSTs them to
+Workbench as a backup snapshot.
 
-   ![Character mismatch warning](images/6.png)
+v1 limitation: this snapshot does not include image bytes. If you need
+a full image backup before restoring, do that from Workbench itself
+(Pull → Backup) first.
 
-## Exported Data
+## Legacy userscript
 
-The ZIP export includes:
-- **character.json** - All character data:
-  - Description (BBCode)
-  - Custom title
-  - Settings (public, timezone, badges, etc.)
-  - Infotags (profile fields)
-  - Kinks (all fetish preferences)
-  - Custom kinks
-- **avatar.png** - Character avatar
-- **images/** - All character images (optional)
-- **inlines/** - Inline images from description (export only, cannot be restored)
+The original `flist-character-exporter.user.js` userscript remains
+supported and lives in this same repo for hot-fix purposes when F-list
+breaks form selectors and the extension's review/release queue is slow.
 
-## Notes
+See [USERSCRIPT.md](USERSCRIPT.md) for the userscript install + usage
+docs. Running both at once works but injects two sets of buttons on the
+edit page — pick one.
 
-- Images are uploaded one-by-one during import (this takes time)
-- Inline images cannot be restored - they're for backup reference only
-- Always click **Save** after importing to save your changes
-- The script only runs on `f-list.net/character_edit.php` pages
+## Privacy
+
+This extension:
+
+- Runs only on `https://www.f-list.net/character_edit.php*`.
+- Talks to `http://127.0.0.1:8765` (your local Workbench sidecar).
+- Talks to `https://static.f-list.net/*` for image bytes during the
+  restore.
+- Stores only the Workbench pairing token in `chrome.storage.local`.
+- Does not contact any other server, log analytics, or hold an F-list
+  session.
 
 ## License
 
-MIT
+MIT — see [LICENSE.md](LICENSE.md) (forthcoming) or, for the bundled
+JSZip library, see [vendor/jszip-LICENSE.md](vendor/jszip-LICENSE.md).
