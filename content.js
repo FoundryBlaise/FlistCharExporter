@@ -541,10 +541,21 @@
       return;
     }
 
+    const KIND_LABEL = {
+      live: 'From F-list',
+      set: 'Working set',
+      backup: 'Backup',
+      'pre-restore': 'Pre-restore',
+    };
+
     let selected = null;
     snapshots.forEach((s) => {
       const row = makeEl('div', { class: 'flist-wb-snapshot-row' });
-      row.appendChild(makeEl('span', { class: `flist-wb-snapshot-kind ${s.kind === 'working' ? 'working' : ''}`, text: s.kind }));
+      const kindClass = String(s.kind || '').replace(/[^a-z-]/gi, '');
+      row.appendChild(makeEl('span', {
+        class: `flist-wb-snapshot-kind ${kindClass}`,
+        text: KIND_LABEL[s.kind] || s.kind || '?',
+      }));
       row.appendChild(makeEl('span', { text: s.label || s.id }));
       row.appendChild(makeEl('span', {
         class: 'flist-wb-snapshot-meta',
