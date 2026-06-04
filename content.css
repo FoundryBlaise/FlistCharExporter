@@ -48,6 +48,49 @@
 .flist-wb-status.unpaired { color: #d8a050; }
 .flist-wb-status.paired { color: #7ab06f; }
 
+.flist-wb-progress-status {
+  font-size: 13px;
+  color: #e3e7f0;
+  font-weight: 500;
+  min-width: 200px;
+}
+
+.flist-wb-progress-bar {
+  flex: 1;
+  height: 8px;
+  background: #1a1f2e;
+  border: 1px solid #3a4258;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 0 6px;
+  min-width: 120px;
+}
+
+.flist-wb-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #4a6fa5 0%, #7ab06f 100%);
+  transition: width 0.18s ease-out;
+}
+
+.flist-wb-save-notice {
+  display: inline-block;
+  margin: 8px 0;
+  padding: 8px 12px;
+  background: #3a2f1f;
+  border: 1px solid #8b6a3a;
+  border-radius: 4px;
+  color: #f0c8a0;
+  font-size: 13px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.flist-wb-save-locked {
+  opacity: 0.45;
+  cursor: not-allowed !important;
+  pointer-events: none;
+}
+
 .flist-wb-overlay {
   position: fixed;
   inset: 0;
