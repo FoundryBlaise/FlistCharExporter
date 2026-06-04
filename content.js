@@ -153,6 +153,20 @@
     return data;
   }
 
+  function fireChange(el) {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function setFieldValue(el, value) {
+    if (el.type === 'checkbox') {
+      el.checked = !!value;
+    } else {
+      el.value = value;
+    }
+    fireChange(el);
+  }
+
   function applyCharacterData(data) {
     const form = document.getElementById('CharacterForm');
     if (!form) throw new Error('Character form not found on page');
@@ -160,16 +174,15 @@
     const result = { fields: 0, kinks: 0, customKinks: 0, warnings: [] };
 
     const desc = form.querySelector('[name="description"]');
-    if (desc) { desc.value = data.character?.description || ''; result.fields++; }
+    if (desc) { setFieldValue(desc, data.character?.description || ''); result.fields++; }
     const title = form.querySelector('[name="custom_title"]');
-    if (title) { title.value = data.character?.customTitle || ''; result.fields++; }
+    if (title) { setFieldValue(title, data.character?.customTitle || ''); result.fields++; }
 
     if (data.settings) {
       for (const [name, value] of Object.entries(data.settings)) {
         const el = form.querySelector(`[name="${name}"]`);
         if (!el) continue;
-        if (el.type === 'checkbox') el.checked = !!value;
-        else el.value = value;
+        setFieldValue(el, value);
         result.fields++;
       }
     }
@@ -177,58 +190,88 @@
     if (data.infotags && Object.keys(data.infotags).length > 0) {
       for (const [name, value] of Object.entries(data.infotags)) {
         const el = form.querySelector(`[name="${name}"]`);
-        if (el) { el.value = value; result.fields++; }
+        if (el) { setFieldValue(el, value); result.fields++; }
       }
     }
 
     if (data.kinks && Object.keys(data.kinks).length > 0) {
       for (const [name, value] of Object.entries(data.kinks)) {
         const el = form.querySelector(`[name="${name}"]`);
-        if (el) { el.value = value; result.kinks++; }
+        if (el) { setFieldValue(el, value); result.kinks++; }
       }
     }
 
-    // Custom kinks — clear existing then re-add via F-list's own helpers
-    const existingContainers = document.querySelectorAll(
-      '[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])'
-    );
-    existingContainers.forEach((container) => {
-      const match = container.id.match(/CustomKink(\d+)/);
-      if (match && typeof window.$ !== 'undefined' && typeof window.FList !== 'undefined') {
-        window.$('#' + container.id).remove();
-        window.FList.Subfetish?.Data?.removeCustom(match[1]);
-      }
-    });
-
-    if (data.customKinks && data.customKinks.length > 0) {
-      if (typeof window.FList === 'undefined' || typeof window.FList.CharEditor_addKink !== 'function') {
-        result.warnings.push('Could not access F-list API for custom kinks.');
-      } else {
-        for (let i = 0; i < data.customKinks.length; i++) window.FList.CharEditor_addKink();
-        setTimeout(() => {
-          const ns = form.querySelectorAll('[name="customkinkname[]"]');
-          const ds = form.querySelectorAll('[name="customkinkdescription[]"]');
-          const cs = form.querySelectorAll('[name="customkinkchoice[]"]');
-          data.customKinks.forEach((kink, i) => {
-            if (ns[i]) {
-              ns[i].value = kink.name;
-              if (ds[i]) ds[i].value = kink.description || '';
-              if (cs[i]) cs[i].value = kink.choice || 'undecided';
+    // Custom kinks: F-list's API for add/remove lives on `window.FList`
+    // in the page's main world — invisible from this isolated-world
+    // content script. Inject a script that does the orchestration
+    // in-page, including filling each row's fields.
+    const customKinksJson = JSON.stringify(data.customKinks || []);
+    const customScript = `
+      (function(payload){
+        try {
+          var existing = document.querySelectorAll(
+            '[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])'
+          );
+          existing.forEach(function(container){
+            var m = container.id.match(/CustomKink(\\d+)/);
+            if (m && typeof window.$ !== 'undefined' && typeof window.FList !== 'undefined') {
+              window.$('#' + container.id).remove();
+              if (window.FList.Subfetish && window.FList.Subfetish.Data) {
+                window.FList.Subfetish.Data.removeCustom(m[1]);
+              }
             }
           });
-        }, 120);
-        result.customKinks = data.customKinks.length;
-      }
-    }
+          if (!payload.length) return;
+          if (typeof window.FList === 'undefined' ||
+              typeof window.FList.CharEditor_addKink !== 'function') return;
+          for (var i = 0; i < payload.length; i++) window.FList.CharEditor_addKink();
+          setTimeout(function(){
+            var form = document.getElementById('CharacterForm');
+            if (!form) return;
+            var ns = form.querySelectorAll('[name="customkinkname[]"]');
+            var ds = form.querySelectorAll('[name="customkinkdescription[]"]');
+            var cs = form.querySelectorAll('[name="customkinkchoice[]"]');
+            payload.forEach(function(kink, i){
+              if (ns[i]) {
+                ns[i].value = kink.name || '';
+                ns[i].dispatchEvent(new Event('input', { bubbles: true }));
+                ns[i].dispatchEvent(new Event('change', { bubbles: true }));
+              }
+              if (ds[i]) {
+                ds[i].value = kink.description || '';
+                ds[i].dispatchEvent(new Event('input', { bubbles: true }));
+              }
+              if (cs[i]) {
+                cs[i].value = kink.choice || 'undecided';
+                cs[i].dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            });
+          }, 120);
+        } catch (e) { console.error('[F-list Workbench] custom-kink fill failed', e); }
+      })(${customKinksJson});
+    `;
+    execInPageWorld(customScript);
+    result.customKinks = (data.customKinks || []).length;
 
     return result;
+  }
+
+  // MV3 isolated world can't see page-defined globals like uploadImage,
+  // deleteImage, FList.*. Injecting a <script> with the call runs in
+  // the page's main world. The script is removed immediately after
+  // execution; even if a security scanner walks the DOM later it
+  // won't find injected code.
+  function execInPageWorld(code) {
+    const script = document.createElement('script');
+    script.textContent = code;
+    (document.head || document.documentElement).appendChild(script);
+    script.remove();
   }
 
   function uploadSingleImage(bytes, filename) {
     return new Promise((resolve, reject) => {
       const fileInput = document.getElementById('imagefile');
       if (!fileInput) return reject(new Error('Image file input not found'));
-      if (typeof window.uploadImage !== 'function') return reject(new Error('uploadImage() not on window'));
 
       const beforeCount = document.querySelectorAll('.character_image').length;
       const mime = filename.endsWith('.png') ? 'image/png'
@@ -252,7 +295,7 @@
         }
       }, 500);
 
-      window.uploadImage();
+      execInPageWorld('if(typeof uploadImage==="function")uploadImage();');
     });
   }
 
@@ -272,8 +315,8 @@
 
   function deleteImageById(imageId) {
     return new Promise((resolve, reject) => {
-      if (typeof window.deleteImage !== 'function') return reject(new Error('deleteImage() not on window'));
-      window.deleteImage(imageId);
+      const idStr = JSON.stringify(String(imageId));
+      execInPageWorld(`if(typeof deleteImage==="function")deleteImage(${idStr});`);
       let attempts = 0;
       const interval = setInterval(() => {
         attempts++;
@@ -288,22 +331,89 @@
     });
   }
 
+  // Content-script-direct sidecar calls. Going through the service
+  // worker would force chrome.runtime.sendMessage to serialise the ZIP
+  // bytes as a JSON array, which both inflates ~4x and hits Chrome's
+  // 64 MiB IPC ceiling. Direct fetch is cross-origin (page is on
+  // f-list.net, sidecar on 127.0.0.1) but the sidecar's CORS middleware
+  // is allow-all, so the response lands cleanly as an ArrayBuffer.
+  const SIDECAR_BASE = 'http://127.0.0.1:8765';
+
+  async function getStoredToken() {
+    try {
+      const { workbench_token } = await chrome.storage.local.get('workbench_token');
+      return workbench_token || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function sidecarGet(path) {
+    const token = await getStoredToken();
+    if (!token) return { ok: false, error: 'not_paired', status: 401 };
+    try {
+      const res = await fetch(SIDECAR_BASE + path, {
+        headers: { 'X-Workbench-Auth': token },
+      });
+      return res;
+    } catch (e) {
+      return { ok: false, error: 'unreachable', detail: String(e) };
+    }
+  }
+
   async function snapshotsList(character) {
-    const res = await sendBg({ type: 'list_snapshots', character });
-    return res;
+    const res = await sidecarGet('/restore/snapshots?character=' + encodeURIComponent(character));
+    if (res.ok === false) return res;
+    if (res.status === 401) return { ok: false, error: 'not_paired', status: 401 };
+    if (!res.ok) return { ok: false, error: 'list_failed', status: res.status };
+    return { ok: true, snapshots: await res.json() };
   }
 
   async function snapshotZipBytes(character, snapshotId) {
-    const res = await sendBg({ type: 'fetch_snapshot', character, snapshot_id: snapshotId });
-    if (!res.ok) return res;
-    return { ok: true, bytes: new Uint8Array(res.bytes) };
+    const res = await sidecarGet(
+      '/restore/snapshot/' + encodeURIComponent(snapshotId) +
+        '?character=' + encodeURIComponent(character)
+    );
+    if (res.ok === false) return res;
+    if (!res.ok) return { ok: false, error: 'fetch_failed', status: res.status };
+    const buf = await res.arrayBuffer();
+    return { ok: true, bytes: new Uint8Array(buf) };
+  }
+
+  async function archivedCharactersList() {
+    const res = await sidecarGet('/restore/characters');
+    if (res.ok === false) return res;
+    if (!res.ok) return { ok: false, error: 'list_chars_failed', status: res.status };
+    return { ok: true, characters: await res.json() };
+  }
+
+  // image_id resolution for backup entries: sidecar working-set ZIPs
+  // emit only {position, filename, description}, where filename is
+  // `images/<image_id>.<ext>`. Userscript-format exports may also have
+  // image_id / id on the entry directly. Try both, parse from
+  // filename last.
+  function backupEntryImageId(entry) {
+    if (!entry || typeof entry !== 'object') return '';
+    if (entry.image_id) return String(entry.image_id);
+    if (entry.id) return String(entry.id);
+    const fn = entry.filename;
+    if (typeof fn === 'string') {
+      const base = fn.split('/').pop() || '';
+      const dot = base.lastIndexOf('.');
+      if (dot > 0) return base.slice(0, dot);
+      return base;
+    }
+    return '';
   }
 
   function diffImageSets(currentImages, backupImageList) {
     const currentIds = new Set(currentImages.map((i) => i.id));
-    const backupIds = new Set((backupImageList || []).map((b) => String(b.image_id || b.id || '')));
+    const backupIds = new Set((backupImageList || []).map(backupEntryImageId).filter(Boolean));
     const willDelete = currentImages.filter((i) => !backupIds.has(i.id));
-    const willAdd = (backupImageList || []).filter((b) => !currentIds.has(String(b.image_id || b.id || '')));
+    const willAdd = (backupImageList || []).filter((b) => {
+      const id = backupEntryImageId(b);
+      return !id || !currentIds.has(id);
+    });
     return { willDelete, willAdd };
   }
 
@@ -471,10 +581,15 @@
           }
         }
 
-        if (zip && backupImages.length > 0) {
-          for (let i = backupImages.length - 1; i >= 0; i--) {
-            const meta = backupImages[i];
-            statusToast.lastChild.textContent = `Uploading image ${backupImages.length - i}/${backupImages.length}…`;
+        // Upload only the images that aren't already on F-list — the
+        // backup's full image list often contains entries whose id
+        // also exists on the page, and re-uploading those would create
+        // duplicates with new F-list-minted ids.
+        const { willAdd: toUpload } = diffImageSets(extractImageData().images, backupImages);
+        if (zip && toUpload.length > 0) {
+          for (let i = toUpload.length - 1; i >= 0; i--) {
+            const meta = toUpload[i];
+            statusToast.lastChild.textContent = `Uploading image ${toUpload.length - i}/${toUpload.length}…`;
             const file = zip.file(meta.filename);
             if (!file) continue;
             try {
@@ -511,87 +626,171 @@
     }
   }
 
-  async function showSnapshotPicker(character) {
+  const KIND_LABEL = {
+    live: 'From F-list',
+    set: 'Working set',
+    backup: 'Backup',
+    'pre-restore': 'Pre-restore',
+  };
+
+  async function showSnapshotPicker(targetCharacter) {
     const modal = openModal({
       title: 'Restore from Workbench',
-      body: makeEl('div', { text: 'Loading snapshots…' }),
+      body: makeEl('div', { text: 'Loading characters…' }),
       footer: [],
     });
 
-    const res = await snapshotsList(character);
+    // The character we're editing (URL) is the target. The user can
+    // pick a different "source" character whose snapshot they want to
+    // load into the current edit form — useful for porting a profile
+    // between throwaway characters or seeding a new char from an old.
+    let sourceCharacter = targetCharacter;
+    let selected = null;
+
+    const cancelBtn = makeEl('button', { class: 'flist-wb-btn secondary', type: 'button', text: 'Cancel' });
+    cancelBtn.addEventListener('click', () => modal.close());
+    const loadBtn = makeEl('button', { class: 'flist-wb-btn', type: 'button', text: 'Load snapshot' });
+    loadBtn.disabled = true;
+    modal.footer.appendChild(cancelBtn);
+    modal.footer.appendChild(loadBtn);
+
+    const charsRes = await archivedCharactersList();
     modal.body.innerHTML = '';
 
-    if (!res.ok) {
-      modal.body.appendChild(makeEl('div', { class: 'flist-wb-warn-box', text: explainError(res) }));
-      if (res.error === 'not_paired') {
-        const pairHint = makeEl('div', {
+    if (!charsRes.ok) {
+      modal.body.appendChild(makeEl('div', { class: 'flist-wb-warn-box', text: explainError(charsRes) }));
+      if (charsRes.error === 'not_paired') {
+        modal.body.appendChild(makeEl('div', {
           text: 'Click the extension icon in the browser toolbar and press Pair to begin.',
-        });
-        modal.body.appendChild(pairHint);
+        }));
       }
       return;
     }
 
-    const snapshots = res.snapshots || [];
-    if (snapshots.length === 0) {
+    const archived = charsRes.characters || [];
+    const sourceRow = makeEl('div', { class: 'flist-wb-source-row' });
+    sourceRow.appendChild(makeEl('label', { text: 'Load from character:', for: 'flist-wb-source-select' }));
+    const select = makeEl('select', { id: 'flist-wb-source-select' });
+
+    if (archived.length === 0) {
       modal.body.appendChild(makeEl('div', {
         class: 'flist-wb-info-box',
-        text: `Workbench has no snapshots for "${character}". Open the character in Workbench and pull/back up first, or use "Import from ZIP file".`,
+        text: 'Workbench has no archived characters yet. Open a character in Workbench and pull it first.',
       }));
       return;
     }
 
-    const KIND_LABEL = {
-      live: 'From F-list',
-      set: 'Working set',
-      backup: 'Backup',
-      'pre-restore': 'Pre-restore',
-    };
-
-    let selected = null;
-    snapshots.forEach((s) => {
-      const row = makeEl('div', { class: 'flist-wb-snapshot-row' });
-      const kindClass = String(s.kind || '').replace(/[^a-z-]/gi, '');
-      row.appendChild(makeEl('span', {
-        class: `flist-wb-snapshot-kind ${kindClass}`,
-        text: KIND_LABEL[s.kind] || s.kind || '?',
-      }));
-      row.appendChild(makeEl('span', { text: s.label || s.id }));
-      row.appendChild(makeEl('span', {
-        class: 'flist-wb-snapshot-meta',
-        text: `${s.image_count || 0} images · ${fmtRelative(s.created_at)}`,
-      }));
-      row.addEventListener('click', () => {
-        modal.body.querySelectorAll('.flist-wb-snapshot-row').forEach((r) => r.classList.remove('selected'));
-        row.classList.add('selected');
-        selected = s;
-        loadBtn.disabled = false;
-      });
-      modal.body.appendChild(row);
+    const hasTarget = archived.some((c) => c.name === targetCharacter);
+    if (!hasTarget && targetCharacter) {
+      const placeholder = makeEl('option', { value: '', text: `${targetCharacter} — no archive yet` });
+      placeholder.disabled = true;
+      select.appendChild(placeholder);
+    }
+    archived.forEach((c) => {
+      const opt = makeEl('option', { value: c.name, text: c.name });
+      if (c.name === targetCharacter) opt.selected = true;
+      select.appendChild(opt);
     });
 
-    const cancelBtn = makeEl('button', { class: 'flist-wb-btn secondary', text: 'Cancel' });
-    cancelBtn.addEventListener('click', () => modal.close());
-    const loadBtn = makeEl('button', { class: 'flist-wb-btn', text: 'Load snapshot' });
-    loadBtn.disabled = true;
+    if (!hasTarget && archived.length > 0) {
+      sourceCharacter = archived[0].name;
+      select.value = sourceCharacter;
+    }
+
+    sourceRow.appendChild(select);
+    modal.body.appendChild(sourceRow);
+
+    const warningSlot = makeEl('div');
+    modal.body.appendChild(warningSlot);
+
+    const listSlot = makeEl('div');
+    modal.body.appendChild(listSlot);
+
+    const renderWarning = () => {
+      warningSlot.innerHTML = '';
+      if (sourceCharacter && targetCharacter && sourceCharacter !== targetCharacter) {
+        warningSlot.appendChild(makeEl('div', {
+          class: 'flist-wb-source-warning',
+          html: `⚠ You're loading data from <strong>${escapeHtml(sourceCharacter)}</strong> into the edit form for <strong>${escapeHtml(targetCharacter)}</strong>. Form fields will be overwritten — review every field before clicking Save.`,
+        }));
+      }
+    };
+
+    const renderSnapshots = async () => {
+      selected = null;
+      loadBtn.disabled = true;
+      listSlot.innerHTML = '';
+      listSlot.appendChild(makeEl('div', { text: 'Loading snapshots…', style: 'color:#8a93a8;padding:8px 0;' }));
+
+      const res = await snapshotsList(sourceCharacter);
+      listSlot.innerHTML = '';
+      if (!res.ok) {
+        listSlot.appendChild(makeEl('div', { class: 'flist-wb-warn-box', text: explainError(res) }));
+        return;
+      }
+      const snapshots = res.snapshots || [];
+      if (snapshots.length === 0) {
+        listSlot.appendChild(makeEl('div', {
+          class: 'flist-wb-info-box',
+          text: `Workbench has no snapshots for "${sourceCharacter}". Pull or back up first, or pick another character.`,
+        }));
+        return;
+      }
+      snapshots.forEach((s) => {
+        const row = makeEl('div', { class: 'flist-wb-snapshot-row' });
+        const kindClass = String(s.kind || '').replace(/[^a-z-]/gi, '');
+        row.appendChild(makeEl('span', {
+          class: `flist-wb-snapshot-kind ${kindClass}`,
+          text: KIND_LABEL[s.kind] || s.kind || '?',
+        }));
+        row.appendChild(makeEl('span', { text: s.label || s.id }));
+        row.appendChild(makeEl('span', {
+          class: 'flist-wb-snapshot-meta',
+          text: `${s.image_count || 0} images · ${fmtRelative(s.created_at)}`,
+        }));
+        row.addEventListener('click', () => {
+          listSlot.querySelectorAll('.flist-wb-snapshot-row').forEach((r) => r.classList.remove('selected'));
+          row.classList.add('selected');
+          selected = s;
+          loadBtn.disabled = false;
+        });
+        listSlot.appendChild(row);
+      });
+    };
+
+    select.addEventListener('change', () => {
+      sourceCharacter = select.value || archived[0]?.name;
+      renderWarning();
+      renderSnapshots();
+    });
+
+    renderWarning();
+    await renderSnapshots();
+
     loadBtn.addEventListener('click', async () => {
+      if (!selected) return;
       loadBtn.disabled = true;
       loadBtn.textContent = 'Loading…';
-      const fetched = await snapshotZipBytes(character, selected.id);
-      modal.close();
+      const fetched = await snapshotZipBytes(sourceCharacter, selected.id);
       if (!fetched.ok) {
+        loadBtn.disabled = false;
+        loadBtn.textContent = 'Load snapshot';
         toast({ title: 'Could not load snapshot', message: explainError(fetched), kind: 'error' });
         return;
       }
+      modal.close();
       try {
         const zip = await window.JSZip.loadAsync(fetched.bytes);
         const jsonFile = zip.file('character.json');
         if (!jsonFile) throw new Error('character.json missing from snapshot ZIP');
         const data = JSON.parse(await jsonFile.async('string'));
+        const sourceLabel = sourceCharacter === targetCharacter
+          ? `Workbench · ${selected.label || selected.id}`
+          : `Workbench · ${sourceCharacter} → ${targetCharacter} · ${selected.label || selected.id}`;
         await showSafetyScreen({
           data,
-          source: `Workbench snapshot · ${selected.label || selected.id}`,
-          character,
+          source: sourceLabel,
+          character: targetCharacter,
           lastBackupIso: selected.created_at,
           applyFn: ({ skipImages }) => doApply(zip, data, { skipImages }),
         });
@@ -599,8 +798,6 @@
         toast({ title: 'Snapshot unreadable', message: String(e.message || e), kind: 'error' });
       }
     });
-    modal.footer.appendChild(cancelBtn);
-    modal.footer.appendChild(loadBtn);
   }
 
   function importFromLocalZip() {
