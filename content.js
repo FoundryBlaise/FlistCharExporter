@@ -186,7 +186,7 @@
   // console which commit they're actually running (browser cache, CDN
   // staleness, "did I really click Reload?" — all easier to rule out
   // when the hash is right there in the diag header).
-  const EXT_BUILD = '9cf746a';
+  const EXT_BUILD = '11eaf4b';
   const DIAG_PREFIX = `[F-list Workbench DIAG @ ${EXT_BUILD}]`;
   function diag(...args) { console.log(DIAG_PREFIX, ...args); }
   function diagGroup(title) { console.group(DIAG_PREFIX + ' ' + title); }
@@ -271,26 +271,31 @@
     diagGroupEnd();
   }
 
-  async function applyCharacterData(data) {
+  async function applyCharacterData(data, selections = {}) {
     const form = document.getElementById('CharacterForm');
     if (!form) throw new Error('Character form not found on page');
 
     diag('===BEGIN APPLY DIAGNOSTICS=== copy from here to ===END===');
+    diag('selections:', JSON.stringify(selections));
     diagDumpFormShape();
     diagDumpPayload(data);
 
     const result = { fields: 0, kinks: 0, customKinks: 0, warnings: [] };
 
-    const desc = form.querySelector('[name="description"]');
-    diag('description: selector matched:', !!desc, '— before length:', desc?.value?.length);
-    if (desc) { setTextFieldValue(desc, data.character?.description || ''); result.fields++; }
-    diag('description: after length:', desc?.value?.length);
+    if (selections.description !== false) {
+      const desc = form.querySelector('[name="description"]');
+      diag('description: selector matched:', !!desc, '— before length:', desc?.value?.length);
+      if (desc) { setTextFieldValue(desc, data.character?.description || ''); result.fields++; }
+      diag('description: after length:', desc?.value?.length);
 
-    const title = form.querySelector('[name="custom_title"]');
-    diag('custom_title: selector matched:', !!title);
-    if (title) { setTextFieldValue(title, data.character?.customTitle || ''); result.fields++; }
+      const title = form.querySelector('[name="custom_title"]');
+      diag('custom_title: selector matched:', !!title);
+      if (title) { setTextFieldValue(title, data.character?.customTitle || ''); result.fields++; }
+    } else {
+      diag('description: skipped (unchecked)');
+    }
 
-    if (data.settings) {
+    if (selections.settings !== false && data.settings) {
       diagGroup('SETTINGS');
       for (const [name, value] of Object.entries(data.settings)) {
         const el = form.querySelector(`[name="${name}"]`);
@@ -304,98 +309,100 @@
       diagGroupEnd();
     }
 
-    // Profile infotags + default kinks: clear-then-apply semantic. The
-    // page may have values for fields the payload doesn't mention; if we
-    // skip them, those stale values persist. User flagged this as the
-    // root cause of "profile fields don't update" — actually they do
-    // for the payload-mentioned ones, but the unmentioned ones keep
-    // the previous character's data.
-    diagGroup('INFOTAGS — clear all then apply');
-    const allInfotagFields = Array.from(form.querySelectorAll('[name^="info_"]'));
-    diag('clearing', allInfotagFields.length, 'info_* fields first');
-    for (const el of allInfotagFields) {
-      if (el.tagName === 'SELECT') {
-        await setSelectValue(el, '');
-      } else if (el.type === 'checkbox' || el.type === 'radio') {
-        setCheckboxValue(el, false);
-      } else {
-        setTextFieldValue(el, '');
-      }
-    }
-    if (data.infotags) {
-      for (const [name, value] of Object.entries(data.infotags)) {
-        const el = form.querySelector(`[name="info_${name}"]`);
-        if (!el) {
-          diag(`infotag[${name}] no element matched — skipping`);
-          continue;
-        }
-        if (el.tagName === 'SELECT') await setSelectValue(el, value);
-        else setTextFieldValue(el, value);
-        result.fields++;
-      }
-    }
-    diagGroupEnd();
-
-    diagGroup('KINKS — clear all then apply');
-    const allKinkSelects = Array.from(form.querySelectorAll('select[name^="fetish_"]'));
-    diag('resetting', allKinkSelects.length, 'fetish_* selects to undecided');
-    for (const el of allKinkSelects) {
-      await setSelectValue(el, 'undecided');
-    }
-    if (data.kinks) {
-      for (const [name, value] of Object.entries(data.kinks)) {
-        const el = form.querySelector(`[name="fetish_${name}"]`);
-        if (!el) {
-          diag(`kink[${name}] no element matched — skipping`);
-          continue;
-        }
-        if (el.tagName === 'SELECT') await setSelectValue(el, value);
-        else setTextFieldValue(el, value);
-        result.kinks++;
-      }
-    }
-    diagGroupEnd();
-
-    // Custom kinks: clear existing via page-world (so FList teardown +
-    // jQuery handlers fire), add the new ones via FList.CharEditor_addKink,
-    // then fill via page-world to pick up Select2 widgets on the choice
-    // dropdown.
-    diagGroup('CUSTOM KINKS');
-    const existingContainers = document.querySelectorAll(
-      '[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])'
-    );
-    diag('existing CustomKink containers before remove:', existingContainers.length,
-      'IDs:', Array.from(existingContainers).slice(0, 10).map((c) => c.id));
-    for (const container of existingContainers) {
-      const match = container.id.match(/CustomKink(\d+)/);
-      if (!match) continue;
-      const r1 = await callPage('jqueryRemove', { selector: container.id });
-      const r2 = await callPage('removeCustomKink', { id: match[1] });
-      diag(`removed ${container.id}: jqueryRemove=${JSON.stringify(r1)} removeCustomKink=${JSON.stringify(r2)}`);
-    }
-    diag('CustomKink containers after remove:',
-      document.querySelectorAll('[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])').length);
-
-    const customKinks = data.customKinks || [];
-    if (customKinks.length > 0) {
-      for (let i = 0; i < customKinks.length; i++) {
-        const r = await callPage('addCustomKink');
-        if (i === 0 || i === customKinks.length - 1) {
-          diag(`addCustomKink #${i + 1}/${customKinks.length}:`, JSON.stringify(r));
+    if (selections.infotags !== false) {
+      diagGroup('INFOTAGS — clear all then apply');
+      const allInfotagFields = Array.from(form.querySelectorAll('[name^="info_"]'));
+      diag('clearing', allInfotagFields.length, 'info_* fields first');
+      for (const el of allInfotagFields) {
+        if (el.tagName === 'SELECT') {
+          await setSelectValue(el, '');
+        } else if (el.type === 'checkbox' || el.type === 'radio') {
+          setCheckboxValue(el, false);
+        } else {
+          setTextFieldValue(el, '');
         }
       }
-      await new Promise((r) => setTimeout(r, 200));
-      diag('after add-loop: CustomKink containers:',
+      if (data.infotags) {
+        for (const [name, value] of Object.entries(data.infotags)) {
+          const el = form.querySelector(`[name="info_${name}"]`);
+          if (!el) {
+            diag(`infotag[${name}] no element matched — skipping`);
+            continue;
+          }
+          if (el.tagName === 'SELECT') await setSelectValue(el, value);
+          else setTextFieldValue(el, value);
+          result.fields++;
+        }
+      }
+      diagGroupEnd();
+    } else {
+      diag('infotags: skipped (unchecked)');
+    }
+
+    if (selections.kinks !== false) {
+      diagGroup('KINKS — clear all then apply');
+      const allKinkSelects = Array.from(form.querySelectorAll('select[name^="fetish_"]'));
+      diag('resetting', allKinkSelects.length, 'fetish_* selects to undecided');
+      for (const el of allKinkSelects) {
+        await setSelectValue(el, 'undecided');
+      }
+      if (data.kinks) {
+        for (const [name, value] of Object.entries(data.kinks)) {
+          const el = form.querySelector(`[name="fetish_${name}"]`);
+          if (!el) {
+            diag(`kink[${name}] no element matched — skipping`);
+            continue;
+          }
+          if (el.tagName === 'SELECT') await setSelectValue(el, value);
+          else setTextFieldValue(el, value);
+          result.kinks++;
+        }
+      }
+      diagGroupEnd();
+    } else {
+      diag('kinks: skipped (unchecked)');
+    }
+
+    if (selections.customKinks !== false) {
+      diagGroup('CUSTOM KINKS');
+      const existingContainers = document.querySelectorAll(
+        '[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])'
+      );
+      diag('existing CustomKink containers before remove:', existingContainers.length,
+        'IDs:', Array.from(existingContainers).slice(0, 10).map((c) => c.id));
+      for (const container of existingContainers) {
+        const match = container.id.match(/CustomKink(\d+)/);
+        if (!match) continue;
+        const r1 = await callPage('jqueryRemove', { selector: container.id });
+        const r2 = await callPage('removeCustomKink', { id: match[1] });
+        diag(`removed ${container.id}: jqueryRemove=${JSON.stringify(r1)} removeCustomKink=${JSON.stringify(r2)}`);
+      }
+      diag('CustomKink containers after remove:',
         document.querySelectorAll('[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])').length);
-      diag('after add-loop: customkinkname[] inputs:',
-        document.querySelectorAll('[name="customkinkname[]"]').length);
-      diag('after add-loop: customkinkname* inputs:',
-        document.querySelectorAll('[name^="customkinkname"]').length);
-      const fillRes = await callPage('setCustomKinkRows', { rows: customKinks }, 8_000);
-      diag('setCustomKinkRows result:', JSON.stringify(fillRes));
-      result.customKinks = customKinks.length;
+
+      const customKinks = data.customKinks || [];
+      if (customKinks.length > 0) {
+        for (let i = 0; i < customKinks.length; i++) {
+          const r = await callPage('addCustomKink');
+          if (i === 0 || i === customKinks.length - 1) {
+            diag(`addCustomKink #${i + 1}/${customKinks.length}:`, JSON.stringify(r));
+          }
+        }
+        await new Promise((r) => setTimeout(r, 200));
+        diag('after add-loop: CustomKink containers:',
+          document.querySelectorAll('[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])').length);
+        diag('after add-loop: customkinkname[] inputs:',
+          document.querySelectorAll('[name="customkinkname[]"]').length);
+        diag('after add-loop: customkinkname* inputs:',
+          document.querySelectorAll('[name^="customkinkname"]').length);
+        const fillRes = await callPage('setCustomKinkRows', { rows: customKinks }, 8_000);
+        diag('setCustomKinkRows result:', JSON.stringify(fillRes));
+        result.customKinks = customKinks.length;
+      }
+      diagGroupEnd();
+    } else {
+      diag('customKinks: skipped (unchecked)');
     }
-    diagGroupEnd();
 
     diag('===END APPLY DIAGNOSTICS=== copy stops here');
     return result;
@@ -682,10 +689,18 @@
     return `${Math.round(diff / 86400)}d ago`;
   }
 
-  async function showSafetyScreen({ data, source, character, lastBackupIso, applyFn }) {
+  async function showSafetyScreen({ data, zip, source, character, lastBackupIso, applyFn }) {
     const current = extractImageData();
     const backupImages = data?.images?.list || [];
     const { willDelete, willAdd } = diffImageSets(current.images, backupImages);
+
+    const descChars = (data?.character?.description || '').length;
+    const customTitle = data?.character?.customTitle || '';
+    const settingsCount = Object.keys(data?.settings || {}).length;
+    const infotagsCount = Object.keys(data?.infotags || {}).length;
+    const kinksCount = Object.keys(data?.kinks || {}).length;
+    const customKinksCount = (data?.customKinks || []).length;
+    const avatarInZip = !!(zip && zip.file && zip.file('avatar.png'));
 
     const body = makeEl('div');
 
@@ -699,61 +714,106 @@
     }));
 
     body.appendChild(makeEl('div', {
-      class: 'flist-wb-info-box',
-      html: `
-        <strong>Form fields</strong> (description, kinks, infotags, settings, custom kinks)
-        are filled into the page and <strong>only persist when YOU click F-list's Save button</strong>.
-        You can review every field before saving.
-      `,
+      class: 'flist-wb-checklist-title',
+      text: 'Choose what to restore:',
     }));
 
-    if (willDelete.length > 0 || willAdd.length > 0) {
-      body.appendChild(makeEl('div', {
-        class: 'flist-wb-warn-box',
-        html: `
-          <strong>⚠ Image changes are destructive and happen IMMEDIATELY</strong> on Apply
-          — F-list's image API does not wait for Save.
-          <ul style="margin: 8px 0 4px 18px; padding: 0;">
-            ${willDelete.length > 0
-              ? `<li><strong>${willDelete.length}</strong> image(s) currently on F-list will be <strong>deleted</strong> (IDs: ${willDelete.map((i) => i.id).join(', ')})</li>`
-              : ''}
-            ${willAdd.length > 0 ? `<li><strong>${willAdd.length}</strong> image(s) from the backup will be uploaded</li>` : ''}
-          </ul>
-          This cannot be undone unless you have a fresh backup.
-        `,
-      }));
-    } else {
-      body.appendChild(makeEl('div', {
-        class: 'flist-wb-info-box',
-        text: 'No image changes — gallery already matches the backup.',
-      }));
+    // Each row: checkbox + label + count/summary + optional warn pill.
+    const checklist = makeEl('div', { class: 'flist-wb-checklist' });
+    body.appendChild(checklist);
+
+    const cbs = {};
+    function row(id, label, summary, opts = {}) {
+      const wrapper = makeEl('label', { class: 'flist-wb-check-row' + (opts.warn ? ' warn' : '') });
+      const cb = makeEl('input', { type: 'checkbox', id: `flist-wb-restore-${id}` });
+      cb.checked = !!opts.defaultChecked;
+      if (opts.disabled) {
+        cb.disabled = true;
+        cb.checked = false;
+      }
+      cbs[id] = cb;
+      wrapper.appendChild(cb);
+      const text = makeEl('div', { class: 'flist-wb-check-text' });
+      text.appendChild(makeEl('div', { class: 'flist-wb-check-label', text: label }));
+      if (summary) text.appendChild(makeEl('div', { class: 'flist-wb-check-summary', html: summary }));
+      wrapper.appendChild(text);
+      checklist.appendChild(wrapper);
+      return cb;
     }
 
-    const skipImages = makeEl('label', { class: 'flist-wb-confirm-row' });
-    const skipImagesCb = makeEl('input', { type: 'checkbox', id: 'flist-wb-skip-images' });
-    skipImages.appendChild(skipImagesCb);
-    skipImages.appendChild(makeEl('span', { text: 'Skip image changes (only fill form fields)' }));
-    body.appendChild(skipImages);
+    row('description', 'Description & custom title',
+      `${descChars} char${descChars === 1 ? '' : 's'}${customTitle ? ` · title "${escapeHtml(customTitle)}"` : ''}`,
+      { defaultChecked: descChars > 0 || !!customTitle });
+
+    row('settings', 'Settings',
+      `${settingsCount} toggle${settingsCount === 1 ? '' : 's'}`,
+      { defaultChecked: settingsCount > 0 });
+
+    row('infotags', 'Profile fields (infotags)',
+      infotagsCount > 0
+        ? `${infotagsCount} entries — others on the page will be cleared first`
+        : '<em>empty in this backup — all profile fields on the page will be cleared</em>',
+      { defaultChecked: infotagsCount > 0 });
+
+    row('kinks', 'Default kinks',
+      kinksCount > 0
+        ? `${kinksCount} entries — others on the page will be reset to <em>undecided</em>`
+        : '<em>empty in this backup — would reset every kink to undecided</em>',
+      { defaultChecked: kinksCount > 0 });
+
+    row('customKinks', 'Custom kinks',
+      customKinksCount > 0
+        ? `${customKinksCount} entries — existing custom kinks on page will be replaced`
+        : '<em>empty in this backup — would remove all existing custom kinks</em>',
+      { defaultChecked: customKinksCount > 0 });
+
+    row('avatar', 'Avatar',
+      avatarInZip
+        ? '1 avatar in this backup'
+        : '<em>no avatar bundled in this backup</em>',
+      { defaultChecked: avatarInZip, disabled: !avatarInZip });
+
+    const galleryWarn = willDelete.length > 0 || willAdd.length > 0;
+    row('images', 'Gallery images',
+      galleryWarn
+        ? `<strong style="color:#f0b8b8">⚠ ${willDelete.length} will be deleted, ${willAdd.length} will be uploaded — happens INSTANTLY, before Save</strong>`
+        : (backupImages.length === 0
+          ? '<em>no images in this backup — would delete every image currently on F-list</em>'
+          : 'gallery already matches the backup — no changes'),
+      { defaultChecked: backupImages.length > 0 && galleryWarn, warn: galleryWarn });
 
     const confirmRow = makeEl('label', { class: 'flist-wb-confirm-row' });
     const confirmCb = makeEl('input', { type: 'checkbox', id: 'flist-wb-confirm-destructive' });
     confirmRow.appendChild(confirmCb);
-    confirmRow.appendChild(makeEl('span', { text: 'I understand image deletions/uploads happen instantly on F-list.' }));
+    confirmRow.appendChild(makeEl('span', { text: 'I understand image changes happen instantly on F-list.' }));
     body.appendChild(confirmRow);
+
+    body.appendChild(makeEl('div', {
+      class: 'flist-wb-info-box',
+      html: `
+        <strong>Form fields persist on Save</strong>. The extension fills description / settings /
+        infotags / kinks / custom kinks into the form — they only commit when you click F-list's
+        Save button. Avatar and gallery image changes happen <strong>immediately</strong>.
+      `,
+    }));
 
     const backupFirstBtn = makeEl('button', {
       class: 'flist-wb-btn secondary',
+      type: 'button',
       text: 'Back up current state first',
     });
-    const cancelBtn = makeEl('button', { class: 'flist-wb-btn secondary', text: 'Cancel' });
-    const applyBtn = makeEl('button', { class: 'flist-wb-btn', text: 'Apply restore' });
-    applyBtn.disabled = (willDelete.length > 0 || willAdd.length > 0);
+    const cancelBtn = makeEl('button', { class: 'flist-wb-btn secondary', type: 'button', text: 'Cancel' });
+    const applyBtn = makeEl('button', { class: 'flist-wb-btn', type: 'button', text: 'Apply restore' });
 
-    const updateApplyState = () => {
-      const needsConfirm = !skipImagesCb.checked && (willDelete.length > 0 || willAdd.length > 0);
-      applyBtn.disabled = needsConfirm && !confirmCb.checked;
-    };
-    skipImagesCb.addEventListener('change', updateApplyState);
+    function updateApplyState() {
+      // Apply enabled if at least one category is checked AND, if images
+      // is checked with destructive changes, the confirm box is ticked.
+      const anyChecked = Object.values(cbs).some((cb) => cb.checked);
+      const imagesChecked = cbs.images.checked;
+      const needsConfirm = imagesChecked && galleryWarn;
+      applyBtn.disabled = !anyChecked || (needsConfirm && !confirmCb.checked);
+    }
+    Object.values(cbs).forEach((cb) => cb.addEventListener('change', updateApplyState));
     confirmCb.addEventListener('change', updateApplyState);
     updateApplyState();
 
@@ -776,7 +836,7 @@
         toast({ title: 'Backup failed', message: explainError(res), kind: 'error' });
         return;
       }
-      backupFirstBtn.textContent = `✓ Backed up (form fields only — images not included)`;
+      backupFirstBtn.textContent = '✓ Backed up (form fields only — images not included)';
       toast({
         title: 'Backed up',
         message: 'Current form state stored in Workbench. Image bytes not included in this v1 backup.',
@@ -785,9 +845,12 @@
     });
 
     applyBtn.addEventListener('click', async () => {
+      const selections = Object.fromEntries(
+        Object.entries(cbs).map(([k, cb]) => [k, cb.checked])
+      );
       modal.close();
       try {
-        await applyFn({ skipImages: skipImagesCb.checked });
+        await applyFn(selections);
       } catch (e) {
         err(e);
         toast({ title: 'Restore failed', message: String(e.message || e), kind: 'error' });
@@ -967,26 +1030,44 @@
     };
   }
 
-  async function doApply(zip, data, { skipImages }) {
+  async function doApply(zip, data, selections = {}) {
     const cancelToken = { cancelled: false };
     const progress = enterBarProgressMode();
     progress.onCancel(() => { cancelToken.cancelled = true; });
     const unlockSave = lockSaveButtons('Workbench is restoring images. Save re-enables when finished.');
 
+    // Auto-snapshot the current character state before applying anything.
+    // Even if the user clicked "Back up first" already, this is a cheap
+    // belt-and-braces safety net — every restore has a corresponding
+    // pre-restore backup in Workbench with no user effort required.
+    try {
+      progress.update('Backing up current state…');
+      const pre = extractCharacterFormState();
+      const character = getCharacterName();
+      const res = await sendBg({ type: 'snapshot_form_state', character, payload: pre });
+      diag('auto pre-restore backup:', JSON.stringify(res));
+    } catch (e) {
+      diag('auto pre-restore backup failed:', String(e.message || e));
+    }
+
     let outcome = 'completed';
     let counts = { deleted: 0, uploaded: 0, deletePlanned: 0, uploadPlanned: 0 };
     let result = { fields: 0, kinks: 0, customKinks: 0, warnings: [] };
 
+    // Treat skipImages as the inverse of selections.images to keep the
+    // existing image-loop logic working with the new opt-in model.
+    const skipImages = selections.images === false;
+
     try {
       progress.update('Filling form fields…');
       progress.setRatio(0);
-      result = await applyCharacterData(data);
+      result = await applyCharacterData(data, selections);
 
       // Avatar processing runs regardless of skipImages — avatar is a
-      // profile aspect (not a gallery change), and users who skip gallery
-      // changes still want the new character's avatar applied.
+      // profile aspect (not a gallery change). Gated on selections.avatar
+      // so users can opt out.
       diag('===BEGIN AVATAR DIAGNOSTICS===');
-      diag('outcome=', outcome, 'skipImages=', skipImages);
+      diag('outcome=', outcome, 'selections.avatar=', selections.avatar);
       diag('data.images.avatar =', JSON.stringify(data?.images?.avatar));
       diag('zip present?', !!zip);
       if (zip) {
@@ -996,7 +1077,9 @@
       const avatarFn = data?.images?.avatar?.filename;
       const avatarFile = zip && avatarFn ? zip.file(avatarFn) : null;
       diag('avatar filename from payload:', avatarFn, 'found in zip?', !!avatarFile);
-      if (outcome === 'cancelled') {
+      if (selections.avatar === false) {
+        diag('SKIP avatar: unchecked in safety screen');
+      } else if (outcome === 'cancelled') {
         diag('SKIP avatar: cancelled');
       } else if (!avatarFn) {
         diag('SKIP avatar: no filename in payload');
@@ -1260,10 +1343,11 @@
           : `Workbench · ${sourceCharacter} → ${targetCharacter} · ${selected.label || selected.id}`;
         await showSafetyScreen({
           data,
+          zip,
           source: sourceLabel,
           character: targetCharacter,
           lastBackupIso: selected.created_at,
-          applyFn: ({ skipImages }) => doApply(zip, data, { skipImages }),
+          applyFn: (selections) => doApply(zip, data, selections),
         });
       } catch (e) {
         toast({ title: 'Snapshot unreadable', message: String(e.message || e), kind: 'error' });
@@ -1287,20 +1371,22 @@
           const data = JSON.parse(await jsonFile.async('string'));
           await showSafetyScreen({
             data,
+            zip,
             source: `Local ZIP · ${file.name}`,
             character,
             lastBackupIso: data?.meta?.exportedAt || data?.meta?.extractedAt || null,
-            applyFn: ({ skipImages }) => doApply(zip, data, { skipImages }),
+            applyFn: (selections) => doApply(zip, data, selections),
           });
         } else {
           const text = await file.text();
           const data = JSON.parse(text);
           await showSafetyScreen({
             data,
+            zip: null,
             source: `Local JSON · ${file.name}`,
             character,
             lastBackupIso: data?.meta?.exportedAt || data?.meta?.extractedAt || null,
-            applyFn: ({ skipImages }) => doApply(null, data, { skipImages: true }),
+            applyFn: (selections) => doApply(null, data, { ...selections, images: false }),
           });
         }
       } catch (e) {
