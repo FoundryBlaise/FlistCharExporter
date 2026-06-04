@@ -186,7 +186,7 @@
   // console which commit they're actually running (browser cache, CDN
   // staleness, "did I really click Reload?" — all easier to rule out
   // when the hash is right there in the diag header).
-  const EXT_BUILD = '11eaf4b';
+  const EXT_BUILD = '3836ea4';
   const DIAG_PREFIX = `[F-list Workbench DIAG @ ${EXT_BUILD}]`;
   function diag(...args) { console.log(DIAG_PREFIX, ...args); }
   function diagGroup(title) { console.group(DIAG_PREFIX + ' ' + title); }
@@ -749,23 +749,27 @@
       `${settingsCount} toggle${settingsCount === 1 ? '' : 's'}`,
       { defaultChecked: settingsCount > 0 });
 
+    // Empty categories default to CHECKED — the auto pre-restore
+    // backup + Workbench's own backups give us safe recovery, so we
+    // prefer "fully overwrite" semantic. The summary text on empty
+    // rows is explicit about what it'll wipe.
     row('infotags', 'Profile fields (infotags)',
       infotagsCount > 0
         ? `${infotagsCount} entries — others on the page will be cleared first`
-        : '<em>empty in this backup — all profile fields on the page will be cleared</em>',
-      { defaultChecked: infotagsCount > 0 });
+        : '<strong style="color:#f0c8a0">⚠ empty in this backup — leaving this checked will clear ALL profile fields on the page</strong>',
+      { defaultChecked: true });
 
     row('kinks', 'Default kinks',
       kinksCount > 0
         ? `${kinksCount} entries — others on the page will be reset to <em>undecided</em>`
-        : '<em>empty in this backup — would reset every kink to undecided</em>',
-      { defaultChecked: kinksCount > 0 });
+        : '<strong style="color:#f0c8a0">⚠ empty in this backup — leaving this checked will reset ALL 559 kinks to undecided</strong>',
+      { defaultChecked: true });
 
     row('customKinks', 'Custom kinks',
       customKinksCount > 0
         ? `${customKinksCount} entries — existing custom kinks on page will be replaced`
-        : '<em>empty in this backup — would remove all existing custom kinks</em>',
-      { defaultChecked: customKinksCount > 0 });
+        : '<strong style="color:#f0c8a0">⚠ empty in this backup — leaving this checked will remove ALL existing custom kinks</strong>',
+      { defaultChecked: true });
 
     row('avatar', 'Avatar',
       avatarInZip
