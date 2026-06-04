@@ -993,15 +993,36 @@
           } catch (e) { warn('delete failed', willDelete[i].id, e); }
         }
 
-        if (outcome !== 'cancelled' && data?.images?.avatar?.filename) {
-          const avatarFile = zip ? zip.file(data.images.avatar.filename) : null;
-          if (avatarFile) {
+        if (outcome !== 'cancelled') {
+          diag('===BEGIN AVATAR DIAGNOSTICS===');
+          diag('avatar block reached, outcome=', outcome);
+          diag('data.images.avatar =', JSON.stringify(data?.images?.avatar));
+          diag('zip present?', !!zip);
+          if (zip) {
+            const zipFileList = Object.keys(zip.files).slice(0, 20);
+            diag('zip files (first 20):', JSON.stringify(zipFileList));
+          }
+          const avatarFn = data?.images?.avatar?.filename;
+          const avatarFile = zip && avatarFn ? zip.file(avatarFn) : null;
+          diag('avatar filename from payload:', avatarFn, 'found in zip?', !!avatarFile);
+          if (!avatarFn) {
+            diag('SKIP avatar: no filename in payload');
+          } else if (!zip) {
+            diag('SKIP avatar: zip is null (JSON-only restore?)');
+          } else if (!avatarFile) {
+            diag('SKIP avatar: filename "' + avatarFn + '" not in ZIP — sidecar didn\'t bundle avatar bytes');
+          } else {
             progress.update('Uploading avatar…');
             try {
               const bytes = await avatarFile.async('uint8array');
-              await uploadAvatarBytes(bytes, data.images.avatar.filename.split('/').pop());
-            } catch (e) { warn('avatar upload failed', e); }
+              diag('avatar bytes loaded:', bytes.length, 'bytes');
+              await uploadAvatarBytes(bytes, avatarFn.split('/').pop());
+            } catch (e) {
+              diag('avatar processing threw:', String(e && e.message || e));
+              warn('avatar upload failed', e);
+            }
           }
+          diag('===END AVATAR===');
         }
 
         if (outcome !== 'cancelled') {
