@@ -487,27 +487,79 @@
   }
 
   async function uploadAvatarBytes(bytes, filename) {
-    // F-list's avatar file input is name="avatar" (diag confirmed) —
-    // the userscript I ported from looked up `#avatar-file` which is
-    // wrong for current F-list. Try the right name, fall back to a
-    // few alternates if F-list changes the markup.
-    const fileInput =
-      document.querySelector('input[type="file"][name="avatar"]') ||
-      document.getElementById('avatar-file') ||
-      document.querySelector('input[type="file"][id*="avatar" i]');
-    diag(`uploadAvatar: input matched = ${!!fileInput}`,
-      fileInput ? `(name="${fileInput.name}" id="${fileInput.id}")` : '');
-    if (!fileInput) throw new Error('Avatar file input not found');
+    diag('===BEGIN AVATAR DIAGNOSTICS=== copy from here to ===END AVATAR===');
+
+    // Dump every plausible avatar-related element so we can see what
+    // F-list actually exposes.
+    const fileInputByName = document.querySelector('input[type="file"][name="avatar"]');
+    const fileInputById = document.getElementById('avatar-file');
+    const fileInputFuzzy = document.querySelector('input[type="file"][id*="avatar" i]');
+    const avatarRelated = Array.from(document.querySelectorAll(
+      '[id*="avatar" i], [name*="avatar" i], [class*="avatar" i]'
+    )).slice(0, 30).map((e) => ({
+      tag: e.tagName,
+      id: e.id || null,
+      name: e.getAttribute('name'),
+      type: e.type || null,
+      className: typeof e.className === 'string' ? e.className.slice(0, 80) : null,
+      text: (e.textContent || '').trim().slice(0, 60),
+    }));
+    diag('avatar element scan:', JSON.stringify(avatarRelated, null, 2));
+
+    // Also: anonymous-named inputs the form-shape diag flagged earlier.
+    const anonInputs = Array.from(document.querySelectorAll(
+      '#CharacterForm input:not([name]), #CharacterForm button:not([name])'
+    )).slice(0, 12).map((e) => ({
+      tag: e.tagName,
+      id: e.id || null,
+      type: e.type || null,
+      value: e.value || null,
+      text: (e.textContent || '').trim().slice(0, 60),
+    }));
+    diag('anonymous inputs/buttons in CharacterForm:', JSON.stringify(anonInputs, null, 2));
+
+    const fileInput = fileInputByName || fileInputById || fileInputFuzzy;
+    diag(`fileInput chosen: byName=${!!fileInputByName} byId=${!!fileInputById} fuzzy=${!!fileInputFuzzy}`,
+      fileInput ? `(name="${fileInput.name}" id="${fileInput.id}")` : '(none)');
+    if (!fileInput) {
+      diag('===END AVATAR=== (no file input found)');
+      throw new Error('Avatar file input not found');
+    }
+
     const mime = filename.endsWith('.png') ? 'image/png'
                : filename.endsWith('.gif') ? 'image/gif' : 'image/jpeg';
     const file = new File([new Blob([bytes], { type: mime })], filename, { type: mime });
     const dt = new DataTransfer();
     dt.items.add(file);
     fileInput.files = dt.files;
+
+    // Verify the assignment took.
+    diag(`after set: fileInput.files.length = ${fileInput.files.length}`,
+      fileInput.files[0] ? `file[0]={name:"${fileInput.files[0].name}", size:${fileInput.files[0].size}, type:"${fileInput.files[0].type}"}` : '');
+
     fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-    // Trigger F-list's main-world avatar upload helper if one exists.
+    fileInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // Some F-list flows trigger upload via a JS helper rather than
+    // form submission. Try the page-world hook for any of them.
     const r = await callPage('uploadAvatar', {}, 15_000);
     diag('uploadAvatar RPC result:', JSON.stringify(r));
+
+    // Look for a button labelled like avatar-upload and click it as a
+    // last resort. F-list's image gallery has a similar "Add Image"
+    // button pattern.
+    const clickCandidates = Array.from(document.querySelectorAll(
+      'button, input[type="button"], input[type="submit"], a'
+    )).filter((b) => {
+      const t = ((b.value || '') + ' ' + (b.textContent || '')).trim().toLowerCase();
+      return /upload\s*avatar|set\s*avatar|change\s*avatar|new\s*avatar|update\s*avatar/.test(t);
+    });
+    diag(`avatar-upload-like button candidates: ${clickCandidates.length}`,
+      JSON.stringify(clickCandidates.slice(0, 5).map((b) => ({
+        tag: b.tagName, text: (b.textContent || '').trim().slice(0, 40), value: b.value, id: b.id,
+      }))));
+
+    diag('===END AVATAR=== copy stops here');
     return true;
   }
 
