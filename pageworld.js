@@ -118,6 +118,14 @@
           const rows = args.rows || [];
           const filled = [];
           const errors = [];
+          // Setting input.value alone is enough — F-list reads the
+          // form fields at submit time. Firing 'change' triggers F-list's
+          // setCustomName onchange handler which expects an entry in
+          // FList.Subfetish.Data.customs keyed by input.dataset.id; that
+          // mapping is lazy-initialized on first user interaction and
+          // doesn't exist yet for freshly-added rows. Skipping the
+          // change event keeps the values correct on Save and avoids
+          // the uncaught TypeError noise in console.
           rows.forEach((row, i) => {
             const container = realRows[i];
             if (!container) {
@@ -127,29 +135,9 @@
             const nameInput = container.querySelector('[name="customkinkname[]"]');
             const descInput = container.querySelector('[name="customkinkdescription[]"]');
             const choiceInput = container.querySelector('[name="customkinkchoice[]"]');
-            try {
-              if (nameInput) {
-                nameInput.value = row.name || '';
-                nameInput.dispatchEvent(new Event('input', { bubbles: true }));
-                nameInput.dispatchEvent(new Event('change', { bubbles: true }));
-              }
-            } catch (e) { errors.push(`row ${i} name: ${e.message}`); }
-            try {
-              if (descInput) {
-                descInput.value = row.description || '';
-                descInput.dispatchEvent(new Event('input', { bubbles: true }));
-              }
-            } catch (e) { errors.push(`row ${i} desc: ${e.message}`); }
-            try {
-              if (choiceInput) {
-                if (window.$ && typeof window.$ === 'function') {
-                  window.$(choiceInput).val(row.choice || 'undecided').trigger('change');
-                } else {
-                  choiceInput.value = row.choice || 'undecided';
-                  choiceInput.dispatchEvent(new Event('change', { bubbles: true }));
-                }
-              }
-            } catch (e) { errors.push(`row ${i} choice: ${e.message}`); }
+            if (nameInput) nameInput.value = row.name || '';
+            if (descInput) descInput.value = row.description || '';
+            if (choiceInput) choiceInput.value = row.choice || 'undecided';
             filled.push(i);
           });
           return { ok: true, filled: filled.length, total: rows.length, errors };
