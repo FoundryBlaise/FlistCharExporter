@@ -158,31 +158,45 @@
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  function setFieldValue(el, value) {
-    if (el.type === 'checkbox') {
-      el.checked = !!value;
-    } else {
-      el.value = value;
-    }
+  function setTextFieldValue(el, value) {
+    el.value = value;
     fireChange(el);
   }
 
-  function applyCharacterData(data) {
+  function setCheckboxValue(el, value) {
+    el.checked = !!value;
+    fireChange(el);
+  }
+
+  // Selects are the tricky case: F-list overlays Select2 (or similar)
+  // widgets on infotag and kink dropdowns, so changing .value natively
+  // updates the underlying <select> but the visible widget keeps the
+  // old label. We route through pageworld.js which calls
+  // $(sel).val(x).trigger('change') — that updates both layers.
+  async function setSelectValue(el, value) {
+    el.value = value;
+    fireChange(el);
+    if (el.name) await callPage('setSelectVal', { name: el.name, value: String(value) }, 4_000);
+  }
+
+  async function applyCharacterData(data) {
     const form = document.getElementById('CharacterForm');
     if (!form) throw new Error('Character form not found on page');
 
     const result = { fields: 0, kinks: 0, customKinks: 0, warnings: [] };
 
     const desc = form.querySelector('[name="description"]');
-    if (desc) { setFieldValue(desc, data.character?.description || ''); result.fields++; }
+    if (desc) { setTextFieldValue(desc, data.character?.description || ''); result.fields++; }
     const title = form.querySelector('[name="custom_title"]');
-    if (title) { setFieldValue(title, data.character?.customTitle || ''); result.fields++; }
+    if (title) { setTextFieldValue(title, data.character?.customTitle || ''); result.fields++; }
 
     if (data.settings) {
       for (const [name, value] of Object.entries(data.settings)) {
         const el = form.querySelector(`[name="${name}"]`);
         if (!el) continue;
-        setFieldValue(el, value);
+        if (el.type === 'checkbox') setCheckboxValue(el, value);
+        else if (el.tagName === 'SELECT') await setSelectValue(el, value);
+        else setTextFieldValue(el, value);
         result.fields++;
       }
     }
@@ -190,97 +204,125 @@
     if (data.infotags && Object.keys(data.infotags).length > 0) {
       for (const [name, value] of Object.entries(data.infotags)) {
         const el = form.querySelector(`[name="${name}"]`);
-        if (el) { setFieldValue(el, value); result.fields++; }
+        if (!el) continue;
+        if (el.tagName === 'SELECT') await setSelectValue(el, value);
+        else setTextFieldValue(el, value);
+        result.fields++;
       }
     }
 
     if (data.kinks && Object.keys(data.kinks).length > 0) {
       for (const [name, value] of Object.entries(data.kinks)) {
         const el = form.querySelector(`[name="${name}"]`);
-        if (el) { setFieldValue(el, value); result.kinks++; }
+        if (!el) continue;
+        if (el.tagName === 'SELECT') await setSelectValue(el, value);
+        else setTextFieldValue(el, value);
+        result.kinks++;
       }
     }
 
-    // Custom kinks: F-list's API for add/remove lives on `window.FList`
-    // in the page's main world — invisible from this isolated-world
-    // content script. Inject a script that does the orchestration
-    // in-page, including filling each row's fields.
-    const customKinksJson = JSON.stringify(data.customKinks || []);
-    const customScript = `
-      (function(payload){
-        try {
-          var existing = document.querySelectorAll(
-            '[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])'
-          );
-          existing.forEach(function(container){
-            var m = container.id.match(/CustomKink(\\d+)/);
-            if (m && typeof window.$ !== 'undefined' && typeof window.FList !== 'undefined') {
-              window.$('#' + container.id).remove();
-              if (window.FList.Subfetish && window.FList.Subfetish.Data) {
-                window.FList.Subfetish.Data.removeCustom(m[1]);
-              }
-            }
-          });
-          if (!payload.length) return;
-          if (typeof window.FList === 'undefined' ||
-              typeof window.FList.CharEditor_addKink !== 'function') return;
-          for (var i = 0; i < payload.length; i++) window.FList.CharEditor_addKink();
-          setTimeout(function(){
-            var form = document.getElementById('CharacterForm');
-            if (!form) return;
-            var ns = form.querySelectorAll('[name="customkinkname[]"]');
-            var ds = form.querySelectorAll('[name="customkinkdescription[]"]');
-            var cs = form.querySelectorAll('[name="customkinkchoice[]"]');
-            payload.forEach(function(kink, i){
-              if (ns[i]) {
-                ns[i].value = kink.name || '';
-                ns[i].dispatchEvent(new Event('input', { bubbles: true }));
-                ns[i].dispatchEvent(new Event('change', { bubbles: true }));
-              }
-              if (ds[i]) {
-                ds[i].value = kink.description || '';
-                ds[i].dispatchEvent(new Event('input', { bubbles: true }));
-              }
-              if (cs[i]) {
-                cs[i].value = kink.choice || 'undecided';
-                cs[i].dispatchEvent(new Event('change', { bubbles: true }));
-              }
-            });
-          }, 120);
-        } catch (e) { console.error('[F-list Workbench] custom-kink fill failed', e); }
-      })(${customKinksJson});
-    `;
-    execInPageWorld(customScript);
-    result.customKinks = (data.customKinks || []).length;
+    // Custom kinks: clear existing via page-world (so FList teardown +
+    // jQuery handlers fire), add the new ones via FList.CharEditor_addKink,
+    // then fill via page-world to pick up Select2 widgets on the choice
+    // dropdown.
+    const existingContainers = document.querySelectorAll(
+      '[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])'
+    );
+    for (const container of existingContainers) {
+      const match = container.id.match(/CustomKink(\d+)/);
+      if (!match) continue;
+      await callPage('jqueryRemove', { selector: container.id });
+      await callPage('removeCustomKink', { id: match[1] });
+    }
+
+    const customKinks = data.customKinks || [];
+    if (customKinks.length > 0) {
+      for (let i = 0; i < customKinks.length; i++) {
+        await callPage('addCustomKink');
+      }
+      // Brief settle so the page DOM reflects the new rows before we fill.
+      await new Promise((r) => setTimeout(r, 200));
+      await callPage('setCustomKinkRows', { rows: customKinks }, 8_000);
+      result.customKinks = customKinks.length;
+    }
 
     return result;
   }
 
-  // MV3 isolated world can't see page-defined globals like uploadImage,
-  // deleteImage, FList.*. Injecting a <script> with the call runs in
-  // the page's main world. The script is removed immediately after
-  // execution; even if a security scanner walks the DOM later it
-  // won't find injected code.
-  function execInPageWorld(code) {
-    const script = document.createElement('script');
-    script.textContent = code;
-    (document.head || document.documentElement).appendChild(script);
-    script.remove();
+  // RPC bridge to pageworld.js (manifest "world": "MAIN"). F-list's CSP
+  // forbids inline <script> tags so direct text-injection silently
+  // no-ops; extension content scripts with explicit world="MAIN" are
+  // exempt from page CSP because they're extension code. Bridge is
+  // window.postMessage with a small request/response protocol.
+  let bridgeReady = false;
+  let bridgeReadyResolvers = [];
+  let rpcCounter = 0;
+  const rpcPending = new Map();
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const m = e.data;
+    if (!m || typeof m !== 'object') return;
+    if (m.type === 'flist-wb-rpc-ready') {
+      bridgeReady = true;
+      const resolvers = bridgeReadyResolvers;
+      bridgeReadyResolvers = [];
+      resolvers.forEach((r) => r());
+      return;
+    }
+    if (m.type === 'flist-wb-rpc-result') {
+      const pending = rpcPending.get(m.id);
+      if (pending) {
+        rpcPending.delete(m.id);
+        pending(m);
+      }
+    }
+  });
+
+  function waitForBridge(timeoutMs = 4000) {
+    if (bridgeReady) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        bridgeReadyResolvers = bridgeReadyResolvers.filter((r) => r !== onReady);
+        resolve(false);
+      }, timeoutMs);
+      const onReady = () => { clearTimeout(timer); resolve(true); };
+      bridgeReadyResolvers.push(onReady);
+    });
   }
 
-  function uploadSingleImage(bytes, filename) {
+  function callPage(action, args = {}, timeoutMs = 8000) {
+    return new Promise((resolve) => {
+      const id = ++rpcCounter;
+      const timer = setTimeout(() => {
+        if (rpcPending.has(id)) {
+          rpcPending.delete(id);
+          resolve({ ok: false, error: 'rpc_timeout', action });
+        }
+      }, timeoutMs);
+      rpcPending.set(id, (msg) => {
+        clearTimeout(timer);
+        resolve({ ok: msg.ok, error: msg.error, note: msg.note });
+      });
+      window.postMessage({ type: 'flist-wb-rpc', id, action, args }, '*');
+    });
+  }
+
+  async function uploadSingleImage(bytes, filename) {
+    const fileInput = document.getElementById('imagefile');
+    if (!fileInput) throw new Error('Image file input not found');
+
+    const beforeCount = document.querySelectorAll('.character_image').length;
+    const mime = filename.endsWith('.png') ? 'image/png'
+               : filename.endsWith('.gif') ? 'image/gif' : 'image/jpeg';
+    const file = new File([new Blob([bytes], { type: mime })], filename, { type: mime });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    fileInput.files = dt.files;
+
+    const callPromise = callPage('uploadImage', {}, 30_000);
+
     return new Promise((resolve, reject) => {
-      const fileInput = document.getElementById('imagefile');
-      if (!fileInput) return reject(new Error('Image file input not found'));
-
-      const beforeCount = document.querySelectorAll('.character_image').length;
-      const mime = filename.endsWith('.png') ? 'image/png'
-                 : filename.endsWith('.gif') ? 'image/gif' : 'image/jpeg';
-      const file = new File([new Blob([bytes], { type: mime })], filename, { type: mime });
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      fileInput.files = dt.files;
-
       let attempts = 0;
       const interval = setInterval(() => {
         attempts++;
@@ -291,11 +333,9 @@
           resolve(containers[containers.length - 1]?.id?.replace('image', '') || null);
         } else if (attempts >= 60) {
           clearInterval(interval);
-          reject(new Error('Upload timeout'));
+          callPromise.then((r) => reject(new Error('Upload timeout' + (r && r.error ? ' (' + r.error + ')' : ''))));
         }
       }, 500);
-
-      execInPageWorld('if(typeof uploadImage==="function")uploadImage();');
     });
   }
 
@@ -314,18 +354,17 @@
   }
 
   function deleteImageById(imageId) {
+    const callPromise = callPage('deleteImage', { id: String(imageId) }, 15_000);
     return new Promise((resolve, reject) => {
-      const idStr = JSON.stringify(String(imageId));
-      execInPageWorld(`if(typeof deleteImage==="function")deleteImage(${idStr});`);
       let attempts = 0;
       const interval = setInterval(() => {
         attempts++;
         if (!document.getElementById(`image${imageId}`)) {
           clearInterval(interval);
           resolve();
-        } else if (attempts >= 20) {
+        } else if (attempts >= 30) {
           clearInterval(interval);
-          reject(new Error('Delete timeout'));
+          callPromise.then((r) => reject(new Error('Delete timeout' + (r && r.error ? ' (' + r.error + ')' : ''))));
         }
       }, 500);
     });
@@ -554,11 +593,43 @@
   }
 
   function findSaveButtons() {
-    const form = document.getElementById('CharacterForm');
-    if (!form) return [];
-    return Array.from(form.querySelectorAll('input[type="submit"], button[type="submit"]'));
+    // Scan the whole document — F-list may have buttons outside the
+    // CharacterForm element. Match anything that's structurally a
+    // submit button OR has text suggesting it saves the profile.
+    const candidates = new Set(
+      document.querySelectorAll(
+        'input[type="submit"], button[type="submit"], button:not([type])'
+      )
+    );
+    document.querySelectorAll('button, input[type="button"]').forEach((b) => {
+      const text = ((b.value || '') + ' ' + (b.textContent || '')).trim().toLowerCase();
+      if (
+        text.includes('update character') ||
+        text.includes('save changes') ||
+        text === 'save'
+      ) {
+        candidates.add(b);
+      }
+    });
+    return Array.from(candidates);
   }
 
+  function isInsideOurUi(target) {
+    if (!target || !target.closest) return false;
+    return !!target.closest(
+      '#flist-wb-bar, .flist-wb-overlay, .flist-wb-toast, .flist-wb-save-notice'
+    );
+  }
+
+  // Belt-and-braces save-blocking. `disabled` alone is insufficient
+  // because F-list may submit via:
+  //   - a JS onclick handler that calls form.submit() (bypasses disabled
+  //     and doesn't fire the submit event)
+  //   - a button labelled "Update Character" that isn't structurally a
+  //     submit input
+  //   - Enter pressed in any form input
+  // So we intercept click / submit / Enter at the capture phase, on the
+  // document, and drop them unless they target our own UI.
   function lockSaveButtons(reason) {
     const saves = findSaveButtons();
     const prior = saves.map((b) => ({
@@ -581,7 +652,49 @@
       }
     });
 
+    const blockClick = (e) => {
+      if (isInsideOurUi(e.target)) return;
+      const t = e.target.closest && e.target.closest(
+        'input[type="submit"], button[type="submit"], button:not([type]), button, input[type="button"]'
+      );
+      if (!t) return;
+      if (!saves.includes(t)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      e.stopPropagation();
+      toast({ title: 'Wait', message: reason, kind: 'warn', durationMs: 3000 });
+    };
+
+    const blockSubmit = (e) => {
+      if (isInsideOurUi(e.target)) return;
+      const form = e.target;
+      if (form && form.id === 'CharacterForm') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        e.stopPropagation();
+        toast({ title: 'Wait', message: reason, kind: 'warn', durationMs: 3000 });
+      }
+    };
+
+    const blockEnter = (e) => {
+      if (e.key !== 'Enter') return;
+      if (isInsideOurUi(e.target)) return;
+      if (!e.target.closest || !e.target.closest('#CharacterForm')) return;
+      // Allow Enter inside textareas (BBCode editing) — they don't
+      // submit the form anyway.
+      if (e.target.tagName === 'TEXTAREA') return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    };
+
+    document.addEventListener('click', blockClick, { capture: true });
+    document.addEventListener('submit', blockSubmit, { capture: true });
+    document.addEventListener('keydown', blockEnter, { capture: true });
+
     return () => {
+      document.removeEventListener('click', blockClick, { capture: true });
+      document.removeEventListener('submit', blockSubmit, { capture: true });
+      document.removeEventListener('keydown', blockEnter, { capture: true });
       prior.forEach(({ el, disabled, title }) => {
         el.disabled = disabled;
         el.classList.remove('flist-wb-save-locked');
@@ -652,7 +765,7 @@
     try {
       progress.update('Filling form fields…');
       progress.setRatio(0);
-      result = applyCharacterData(data);
+      result = await applyCharacterData(data);
 
       if (!skipImages) {
         const current = extractImageData();

@@ -21,9 +21,16 @@
   "content_scripts": [
     {
       "matches": ["https://www.f-list.net/character_edit.php*"],
+      "js": ["pageworld.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.f-list.net/character_edit.php*"],
       "js": ["vendor/jszip.min.js", "content.js"],
       "css": ["content.css"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "world": "ISOLATED"
     }
   ],
   "action": {
