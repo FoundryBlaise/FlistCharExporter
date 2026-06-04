@@ -179,73 +179,242 @@
     if (el.name) await callPage('setSelectVal', { name: el.name, value: String(value) }, 4_000);
   }
 
+  // ===== DIAGNOSTIC BUILD =====
+  // Heavy console logging behind a single prefix so the user can grab
+  // the block with Ctrl+F. Does NOT change apply behavior.
+  const DIAG_PREFIX = '[F-list Workbench DIAG]';
+  function diag(...args) { console.log(DIAG_PREFIX, ...args); }
+  function diagGroup(title) { console.group(DIAG_PREFIX + ' ' + title); }
+  function diagGroupEnd() { console.groupEnd(); }
+
+  function diagDumpFormShape() {
+    diagGroup('FORM-SHAPE');
+    const form = document.getElementById('CharacterForm');
+    diag('CharacterForm present:', !!form);
+    if (!form) { diagGroupEnd(); return; }
+
+    const allInputs = Array.from(form.querySelectorAll('input, select, textarea'));
+    diag('total form inputs/selects/textareas:', allInputs.length);
+
+    // Group by tag + name-prefix.
+    const byPrefix = {};
+    for (const el of allInputs) {
+      const name = el.getAttribute('name') || '';
+      let pfx;
+      if (!name) pfx = '(no-name id=' + (el.id || 'anon') + ')';
+      else if (/^[0-9]+$/.test(name)) pfx = '<numeric>';
+      else if (name.startsWith('info_')) pfx = 'info_*';
+      else if (name.startsWith('infotag')) pfx = 'infotag*';
+      else if (name.startsWith('fetish_')) pfx = 'fetish_*';
+      else if (name.startsWith('kink_')) pfx = 'kink_*';
+      else if (name.startsWith('customkink')) pfx = 'customkink*';
+      else pfx = name;
+      byPrefix[pfx] = (byPrefix[pfx] || 0) + 1;
+    }
+    diag('inputs grouped by name-prefix:', JSON.stringify(byPrefix, null, 2));
+
+    // Sample of selects + their first option labels.
+    const selects = Array.from(form.querySelectorAll('select'));
+    diag('total <select> elements:', selects.length);
+    diag('first 10 selects (name, id, current value, first 3 option values):',
+      JSON.stringify(selects.slice(0, 10).map((s) => ({
+        name: s.name, id: s.id, value: s.value,
+        opt0: s.options[0]?.value, opt1: s.options[1]?.value, opt2: s.options[2]?.value,
+      })), null, 2));
+
+    // Custom kink containers + inputs.
+    const customContainers = Array.from(document.querySelectorAll('[id^="CustomKink"]'));
+    diag('CustomKink* containers:', customContainers.length,
+      'IDs:', customContainers.slice(0, 8).map((c) => c.id));
+    const customNames = Array.from(form.querySelectorAll('[name="customkinkname[]"]'));
+    const altCustomNames = Array.from(form.querySelectorAll('[name^="customkinkname"]'));
+    diag('selector [name="customkinkname[]"] matches:', customNames.length);
+    diag('selector [name^="customkinkname"] matches:', altCustomNames.length);
+    if (altCustomNames.length > 0) {
+      diag('first 5 customkinkname* element names:',
+        altCustomNames.slice(0, 5).map((e) => e.name));
+    }
+
+    // Widget detection.
+    diag('jQuery present (window.$):', typeof window.$ === 'function');
+    diag('window.FList present:', typeof window.FList === 'object');
+    diag('Select2 widgets in DOM (.select2-container):',
+      document.querySelectorAll('.select2-container, .select2, span.select2-selection').length);
+
+    diagGroupEnd();
+  }
+
+  function diagDumpPayload(data) {
+    diagGroup('PAYLOAD');
+    diag('character.id:', data.character?.id);
+    diag('character.name:', data.character?.name);
+    diag('description length:', (data.character?.description || '').length);
+    diag('customTitle:', JSON.stringify(data.character?.customTitle));
+    diag('settings keys:', Object.keys(data.settings || {}));
+    const infoKeys = Object.keys(data.infotags || {});
+    diag('infotags count:', infoKeys.length, 'sample keys:', infoKeys.slice(0, 10));
+    diag('first 5 infotag entries:', JSON.stringify(
+      Object.fromEntries(Object.entries(data.infotags || {}).slice(0, 5))));
+    const kinkKeys = Object.keys(data.kinks || {});
+    diag('kinks count:', kinkKeys.length, 'sample keys:', kinkKeys.slice(0, 10));
+    diag('first 5 kink entries:', JSON.stringify(
+      Object.fromEntries(Object.entries(data.kinks || {}).slice(0, 5))));
+    diag('customKinks count:', (data.customKinks || []).length);
+    if (data.customKinks?.[0]) {
+      diag('first customKink:', JSON.stringify(data.customKinks[0]));
+    }
+    diagGroupEnd();
+  }
+
   async function applyCharacterData(data) {
     const form = document.getElementById('CharacterForm');
     if (!form) throw new Error('Character form not found on page');
 
+    diag('===BEGIN APPLY DIAGNOSTICS=== copy from here to ===END===');
+    diagDumpFormShape();
+    diagDumpPayload(data);
+
     const result = { fields: 0, kinks: 0, customKinks: 0, warnings: [] };
 
     const desc = form.querySelector('[name="description"]');
+    diag('description: selector matched:', !!desc, '— before length:', desc?.value?.length);
     if (desc) { setTextFieldValue(desc, data.character?.description || ''); result.fields++; }
+    diag('description: after length:', desc?.value?.length);
+
     const title = form.querySelector('[name="custom_title"]');
+    diag('custom_title: selector matched:', !!title);
     if (title) { setTextFieldValue(title, data.character?.customTitle || ''); result.fields++; }
 
     if (data.settings) {
+      diagGroup('SETTINGS');
       for (const [name, value] of Object.entries(data.settings)) {
         const el = form.querySelector(`[name="${name}"]`);
+        diag(`setting [${name}] = ${JSON.stringify(value)}: matched=${!!el}${el ? ' tag=' + el.tagName + ' type=' + el.type : ''}`);
         if (!el) continue;
         if (el.type === 'checkbox') setCheckboxValue(el, value);
         else if (el.tagName === 'SELECT') await setSelectValue(el, value);
         else setTextFieldValue(el, value);
         result.fields++;
       }
+      diagGroupEnd();
     }
 
     if (data.infotags && Object.keys(data.infotags).length > 0) {
+      diagGroup('INFOTAGS');
+      let matchedAny = false;
       for (const [name, value] of Object.entries(data.infotags)) {
-        const el = form.querySelector(`[name="${name}"]`);
-        if (!el) continue;
-        if (el.tagName === 'SELECT') await setSelectValue(el, value);
-        else setTextFieldValue(el, value);
-        result.fields++;
+        // Try multiple selector forms — the diagnostic will tell us
+        // which one F-list actually uses.
+        const candidates = [
+          `[name="${name}"]`,
+          `[name="info_${name}"]`,
+          `[name="infotag_${name}"]`,
+          `[name="infotag[${name}]"]`,
+          `[name="infotags[${name}]"]`,
+          `#info_${name}`,
+          `#infotag_${name}`,
+        ];
+        const matches = candidates.map((sel) => {
+          try { return { sel, count: form.querySelectorAll(sel).length }; }
+          catch { return { sel, count: 0 }; }
+        });
+        const matched = matches.find((m) => m.count > 0);
+        if (!matchedAny) {
+          diag(`infotag[${name}] = ${JSON.stringify(value)}: candidate selector results:`,
+            JSON.stringify(matches));
+          matchedAny = true;
+        } else {
+          diag(`infotag[${name}] = ${JSON.stringify(value)}: matched =`,
+            matched ? matched.sel : 'NONE');
+        }
+        if (matched) {
+          const el = form.querySelector(matched.sel);
+          if (el.tagName === 'SELECT') await setSelectValue(el, value);
+          else setTextFieldValue(el, value);
+          result.fields++;
+        }
       }
+      diagGroupEnd();
     }
 
     if (data.kinks && Object.keys(data.kinks).length > 0) {
+      diagGroup('KINKS');
+      let matchedAny = false;
       for (const [name, value] of Object.entries(data.kinks)) {
-        const el = form.querySelector(`[name="${name}"]`);
-        if (!el) continue;
-        if (el.tagName === 'SELECT') await setSelectValue(el, value);
-        else setTextFieldValue(el, value);
-        result.kinks++;
+        const candidates = [
+          `[name="${name}"]`,
+          `[name="fetish_${name}"]`,
+          `[name="kink_${name}"]`,
+          `[name="kink[${name}]"]`,
+          `[name="kinks[${name}]"]`,
+          `#kink_${name}`,
+          `#fetish_${name}`,
+        ];
+        const matches = candidates.map((sel) => {
+          try { return { sel, count: form.querySelectorAll(sel).length }; }
+          catch { return { sel, count: 0 }; }
+        });
+        const matched = matches.find((m) => m.count > 0);
+        if (!matchedAny) {
+          diag(`kink[${name}] = ${JSON.stringify(value)}: candidate selector results:`,
+            JSON.stringify(matches));
+          matchedAny = true;
+        } else {
+          diag(`kink[${name}] = ${JSON.stringify(value)}: matched =`,
+            matched ? matched.sel : 'NONE');
+        }
+        if (matched) {
+          const el = form.querySelector(matched.sel);
+          if (el.tagName === 'SELECT') await setSelectValue(el, value);
+          else setTextFieldValue(el, value);
+          result.kinks++;
+        }
       }
+      diagGroupEnd();
     }
 
     // Custom kinks: clear existing via page-world (so FList teardown +
     // jQuery handlers fire), add the new ones via FList.CharEditor_addKink,
     // then fill via page-world to pick up Select2 widgets on the choice
     // dropdown.
+    diagGroup('CUSTOM KINKS');
     const existingContainers = document.querySelectorAll(
       '[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])'
     );
+    diag('existing CustomKink containers before remove:', existingContainers.length,
+      'IDs:', Array.from(existingContainers).slice(0, 10).map((c) => c.id));
     for (const container of existingContainers) {
       const match = container.id.match(/CustomKink(\d+)/);
       if (!match) continue;
-      await callPage('jqueryRemove', { selector: container.id });
-      await callPage('removeCustomKink', { id: match[1] });
+      const r1 = await callPage('jqueryRemove', { selector: container.id });
+      const r2 = await callPage('removeCustomKink', { id: match[1] });
+      diag(`removed ${container.id}: jqueryRemove=${JSON.stringify(r1)} removeCustomKink=${JSON.stringify(r2)}`);
     }
+    diag('CustomKink containers after remove:',
+      document.querySelectorAll('[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])').length);
 
     const customKinks = data.customKinks || [];
     if (customKinks.length > 0) {
       for (let i = 0; i < customKinks.length; i++) {
-        await callPage('addCustomKink');
+        const r = await callPage('addCustomKink');
+        if (i === 0 || i === customKinks.length - 1) {
+          diag(`addCustomKink #${i + 1}/${customKinks.length}:`, JSON.stringify(r));
+        }
       }
-      // Brief settle so the page DOM reflects the new rows before we fill.
       await new Promise((r) => setTimeout(r, 200));
-      await callPage('setCustomKinkRows', { rows: customKinks }, 8_000);
+      diag('after add-loop: CustomKink containers:',
+        document.querySelectorAll('[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"])').length);
+      diag('after add-loop: customkinkname[] inputs:',
+        document.querySelectorAll('[name="customkinkname[]"]').length);
+      diag('after add-loop: customkinkname* inputs:',
+        document.querySelectorAll('[name^="customkinkname"]').length);
+      const fillRes = await callPage('setCustomKinkRows', { rows: customKinks }, 8_000);
+      diag('setCustomKinkRows result:', JSON.stringify(fillRes));
       result.customKinks = customKinks.length;
     }
+    diagGroupEnd();
 
+    diag('===END APPLY DIAGNOSTICS=== copy stops here');
     return result;
   }
 
