@@ -553,27 +553,127 @@
     return `${res.error || 'Unknown error'}${res.detail ? ': ' + res.detail : ''}`;
   }
 
+  function findSaveButtons() {
+    const form = document.getElementById('CharacterForm');
+    if (!form) return [];
+    return Array.from(form.querySelectorAll('input[type="submit"], button[type="submit"]'));
+  }
+
+  function lockSaveButtons(reason) {
+    const saves = findSaveButtons();
+    const prior = saves.map((b) => ({
+      el: b,
+      disabled: b.disabled,
+      title: b.getAttribute('title'),
+    }));
+    saves.forEach((b) => {
+      b.disabled = true;
+      b.classList.add('flist-wb-save-locked');
+      b.setAttribute('title', reason);
+    });
+
+    const notices = [];
+    saves.forEach((b) => {
+      if (b.parentNode) {
+        const notice = makeEl('div', { class: 'flist-wb-save-notice', text: reason });
+        b.parentNode.insertBefore(notice, b);
+        notices.push(notice);
+      }
+    });
+
+    return () => {
+      prior.forEach(({ el, disabled, title }) => {
+        el.disabled = disabled;
+        el.classList.remove('flist-wb-save-locked');
+        if (title === null) el.removeAttribute('title');
+        else el.setAttribute('title', title);
+      });
+      notices.forEach((n) => n.remove());
+    };
+  }
+
+  function enterBarProgressMode() {
+    const bar = document.getElementById('flist-wb-bar');
+    if (!bar) {
+      // Standalone mode (e.g. on a stub page) — just return inert helpers.
+      return {
+        update: () => {},
+        setRatio: () => {},
+        restore: () => {},
+        onCancel: () => {},
+      };
+    }
+    const childSnapshot = Array.from(bar.children);
+    childSnapshot.forEach((c) => (c.style.display = 'none'));
+
+    const label = makeEl('span', { class: 'flist-wb-bar-label', text: 'F-list Workbench' });
+    const status = makeEl('span', { class: 'flist-wb-progress-status', text: 'Applying restore…' });
+    const bar1 = makeEl('div', { class: 'flist-wb-progress-bar' });
+    const fill = makeEl('div', { class: 'flist-wb-progress-fill' });
+    bar1.appendChild(fill);
+    const cancelBtn = makeEl('button', { class: 'flist-wb-btn danger', type: 'button', text: 'Cancel' });
+
+    bar.appendChild(label);
+    bar.appendChild(status);
+    bar.appendChild(bar1);
+    bar.appendChild(cancelBtn);
+
+    let cancelHandler = null;
+    cancelBtn.addEventListener('click', () => {
+      if (cancelHandler) cancelHandler();
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = 'Cancelling…';
+    });
+
+    return {
+      update: (text) => { status.textContent = text; },
+      setRatio: (n) => {
+        const pct = Math.max(0, Math.min(1, n)) * 100;
+        fill.style.width = pct.toFixed(1) + '%';
+      },
+      onCancel: (fn) => { cancelHandler = fn; },
+      restore: () => {
+        [label, status, bar1, cancelBtn].forEach((el) => el.remove());
+        childSnapshot.forEach((c) => (c.style.display = ''));
+      },
+    };
+  }
+
   async function doApply(zip, data, { skipImages }) {
-    const statusToast = toast({ title: 'Applying restore', message: 'Filling form fields…', kind: 'info', durationMs: 0 });
+    const cancelToken = { cancelled: false };
+    const progress = enterBarProgressMode();
+    progress.onCancel(() => { cancelToken.cancelled = true; });
+    const unlockSave = lockSaveButtons('Workbench is restoring images. Save re-enables when finished.');
+
+    let outcome = 'completed';
+    let counts = { deleted: 0, uploaded: 0, deletePlanned: 0, uploadPlanned: 0 };
+    let result = { fields: 0, kinks: 0, customKinks: 0, warnings: [] };
+
     try {
-      const result = applyCharacterData(data);
+      progress.update('Filling form fields…');
+      progress.setRatio(0);
+      result = applyCharacterData(data);
 
       if (!skipImages) {
         const current = extractImageData();
         const backupImages = data?.images?.list || [];
         const { willDelete } = diffImageSets(current.images, backupImages);
+        counts.deletePlanned = willDelete.length;
 
         for (let i = 0; i < willDelete.length; i++) {
-          statusToast.querySelector('.flist-wb-toast-title').textContent = 'Applying restore';
-          statusToast.lastChild.textContent = `Deleting image ${i + 1}/${willDelete.length}…`;
-          try { await deleteImageById(willDelete[i].id); }
-          catch (e) { warn('delete failed', willDelete[i].id, e); }
+          if (cancelToken.cancelled) { outcome = 'cancelled'; break; }
+          progress.update(`Deleting image ${i + 1}/${willDelete.length}`);
+          progress.setRatio(i / Math.max(1, willDelete.length + 1 + backupImages.length));
+          try {
+            await deleteImageById(willDelete[i].id);
+            counts.deleted++;
+          } catch (e) { warn('delete failed', willDelete[i].id, e); }
         }
 
-        if (data?.images?.avatar?.filename) {
+        if (outcome !== 'cancelled' && data?.images?.avatar?.filename) {
           const avatarFile = zip ? zip.file(data.images.avatar.filename) : null;
           if (avatarFile) {
-            statusToast.lastChild.textContent = 'Uploading avatar…';
+            progress.update('Uploading avatar…');
             try {
               const bytes = await avatarFile.async('uint8array');
               await uploadAvatarBytes(bytes, data.images.avatar.filename.split('/').pop());
@@ -581,48 +681,67 @@
           }
         }
 
-        // Upload only the images that aren't already on F-list — the
-        // backup's full image list often contains entries whose id
-        // also exists on the page, and re-uploading those would create
-        // duplicates with new F-list-minted ids.
-        const { willAdd: toUpload } = diffImageSets(extractImageData().images, backupImages);
-        if (zip && toUpload.length > 0) {
-          for (let i = toUpload.length - 1; i >= 0; i--) {
-            const meta = toUpload[i];
-            statusToast.lastChild.textContent = `Uploading image ${toUpload.length - i}/${toUpload.length}…`;
-            const file = zip.file(meta.filename);
-            if (!file) continue;
-            try {
-              const bytes = await file.async('uint8array');
-              const filename = meta.filename.split('/').pop();
-              const newId = await uploadSingleImage(bytes, filename);
-              if (meta.description && newId) {
-                const descInput = document.querySelector(`#image${newId} .character_image_description`);
-                if (descInput) descInput.value = meta.description;
-              }
-            } catch (e) { warn('image upload failed', meta.filename, e); }
+        if (outcome !== 'cancelled') {
+          const { willAdd: toUpload } = diffImageSets(extractImageData().images, backupImages);
+          counts.uploadPlanned = toUpload.length;
+          if (zip && toUpload.length > 0) {
+            for (let i = toUpload.length - 1; i >= 0; i--) {
+              if (cancelToken.cancelled) { outcome = 'cancelled'; break; }
+              const meta = toUpload[i];
+              const idx = toUpload.length - i;
+              progress.update(`Uploading image ${idx}/${toUpload.length}`);
+              const denom = Math.max(1, counts.deletePlanned + 1 + toUpload.length);
+              progress.setRatio((counts.deletePlanned + idx) / denom);
+              const file = zip.file(meta.filename);
+              if (!file) continue;
+              try {
+                const bytes = await file.async('uint8array');
+                const filename = meta.filename.split('/').pop();
+                const newId = await uploadSingleImage(bytes, filename);
+                counts.uploaded++;
+                if (meta.description && newId) {
+                  const descInput = document.querySelector(`#image${newId} .character_image_description`);
+                  if (descInput) descInput.value = meta.description;
+                }
+              } catch (e) { warn('image upload failed', meta.filename, e); }
+            }
           }
         }
       }
 
-      statusToast.remove();
+      progress.setRatio(1);
 
       const character = getCharacterName();
       sendBg({ type: 'restore_done', character });
 
-      const saveBtn = document.querySelector('input[type="submit"], button[type="submit"]');
-      if (saveBtn) saveBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-      toast({
-        title: 'Ready to save',
-        message: `Form filled: ${result.fields} fields, ${result.kinks} kinks, ${result.customKinks} custom kinks. ` +
-                 `Review every field above, then click F-list's Save button — the extension will NOT click it for you.`,
-        kind: 'success',
-        durationMs: 0,
-      });
-    } catch (e) {
-      statusToast.remove();
-      throw e;
+      if (outcome === 'completed') {
+        const saveBtns = findSaveButtons();
+        if (saveBtns[0]) saveBtns[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+        toast({
+          title: 'Ready to save',
+          message:
+            `Form filled: ${result.fields} fields, ${result.kinks} kinks, ${result.customKinks} custom kinks. ` +
+            (skipImages
+              ? ''
+              : `Images: ${counts.uploaded} uploaded, ${counts.deleted} deleted. `) +
+            `Review every field above, then click F-list's Save button — the extension will NOT click it for you.`,
+          kind: 'success',
+          durationMs: 0,
+        });
+      } else {
+        toast({
+          title: 'Restore cancelled',
+          message:
+            `Stopped after ${counts.deleted}/${counts.deletePlanned} deletes and ` +
+            `${counts.uploaded}/${counts.uploadPlanned} uploads. Form fields were filled. ` +
+            `Image gallery is now in a partial state — re-run the import or fix manually on F-list.`,
+          kind: 'warn',
+          durationMs: 0,
+        });
+      }
+    } finally {
+      progress.restore();
+      unlockSave();
     }
   }
 
