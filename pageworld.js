@@ -103,37 +103,56 @@
         }
 
       case 'setCustomKinkRows':
-        // Populate the N most-recently-added customkink rows from a
-        // payload [{name, description, choice}, ...]. Runs in page world
-        // so jQuery-bound select widgets pick up the change event.
+        // Populate the N visible CustomKink<N> rows from a payload of
+        // [{name, description, choice}, ...]. The earlier version
+        // queried [name="customkinkname[]"] across the form which also
+        // matched CustomKink_TEMPLATE_'s hidden input — writing to
+        // that triggered F-list's setCustomName onchange handler which
+        // throws because the template has no kink data backing it.
+        // jQuery 1.7's trigger() re-throws synchronous handler errors,
+        // aborting the loop after row 0. Filter to real containers.
         try {
-          const form = document.getElementById('CharacterForm');
-          if (!form) return { ok: false, error: 'CharacterForm missing' };
-          const ns = form.querySelectorAll('[name="customkinkname[]"]');
-          const ds = form.querySelectorAll('[name="customkinkdescription[]"]');
-          const cs = form.querySelectorAll('[name="customkinkchoice[]"]');
+          const realRows = Array.from(document.querySelectorAll(
+            '[id^="CustomKink"]:not([id="CustomKinksList"]):not([id*="TEMPLATE"]):not([id*="template"])'
+          ));
           const rows = args.rows || [];
+          const filled = [];
+          const errors = [];
           rows.forEach((row, i) => {
-            const idx = i; // rows[0] → first input, etc.
-            if (ns[idx]) {
-              ns[idx].value = row.name || '';
-              ns[idx].dispatchEvent(new Event('input', { bubbles: true }));
-              ns[idx].dispatchEvent(new Event('change', { bubbles: true }));
+            const container = realRows[i];
+            if (!container) {
+              errors.push(`row ${i}: no container at index ${i} (have ${realRows.length})`);
+              return;
             }
-            if (ds[idx]) {
-              ds[idx].value = row.description || '';
-              ds[idx].dispatchEvent(new Event('input', { bubbles: true }));
-            }
-            if (cs[idx]) {
-              if (window.$ && typeof window.$ === 'function') {
-                window.$(cs[idx]).val(row.choice || 'undecided').trigger('change');
-              } else {
-                cs[idx].value = row.choice || 'undecided';
-                cs[idx].dispatchEvent(new Event('change', { bubbles: true }));
+            const nameInput = container.querySelector('[name="customkinkname[]"]');
+            const descInput = container.querySelector('[name="customkinkdescription[]"]');
+            const choiceInput = container.querySelector('[name="customkinkchoice[]"]');
+            try {
+              if (nameInput) {
+                nameInput.value = row.name || '';
+                nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+                nameInput.dispatchEvent(new Event('change', { bubbles: true }));
               }
-            }
+            } catch (e) { errors.push(`row ${i} name: ${e.message}`); }
+            try {
+              if (descInput) {
+                descInput.value = row.description || '';
+                descInput.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+            } catch (e) { errors.push(`row ${i} desc: ${e.message}`); }
+            try {
+              if (choiceInput) {
+                if (window.$ && typeof window.$ === 'function') {
+                  window.$(choiceInput).val(row.choice || 'undecided').trigger('change');
+                } else {
+                  choiceInput.value = row.choice || 'undecided';
+                  choiceInput.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+              }
+            } catch (e) { errors.push(`row ${i} choice: ${e.message}`); }
+            filled.push(i);
           });
-          return { ok: true, filled: rows.length };
+          return { ok: true, filled: filled.length, total: rows.length, errors };
         } catch (e) {
           return { ok: false, error: String(e && e.message || e) };
         }

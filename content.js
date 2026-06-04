@@ -299,79 +299,57 @@
       diagGroupEnd();
     }
 
-    if (data.infotags && Object.keys(data.infotags).length > 0) {
-      diagGroup('INFOTAGS');
-      let matchedAny = false;
+    // Profile infotags + default kinks: clear-then-apply semantic. The
+    // page may have values for fields the payload doesn't mention; if we
+    // skip them, those stale values persist. User flagged this as the
+    // root cause of "profile fields don't update" — actually they do
+    // for the payload-mentioned ones, but the unmentioned ones keep
+    // the previous character's data.
+    diagGroup('INFOTAGS — clear all then apply');
+    const allInfotagFields = Array.from(form.querySelectorAll('[name^="info_"]'));
+    diag('clearing', allInfotagFields.length, 'info_* fields first');
+    for (const el of allInfotagFields) {
+      if (el.tagName === 'SELECT') {
+        await setSelectValue(el, '');
+      } else if (el.type === 'checkbox' || el.type === 'radio') {
+        setCheckboxValue(el, false);
+      } else {
+        setTextFieldValue(el, '');
+      }
+    }
+    if (data.infotags) {
       for (const [name, value] of Object.entries(data.infotags)) {
-        // Try multiple selector forms — the diagnostic will tell us
-        // which one F-list actually uses.
-        const candidates = [
-          `[name="${name}"]`,
-          `[name="info_${name}"]`,
-          `[name="infotag_${name}"]`,
-          `[name="infotag[${name}]"]`,
-          `[name="infotags[${name}]"]`,
-          `#info_${name}`,
-          `#infotag_${name}`,
-        ];
-        const matches = candidates.map((sel) => {
-          try { return { sel, count: form.querySelectorAll(sel).length }; }
-          catch { return { sel, count: 0 }; }
-        });
-        const matched = matches.find((m) => m.count > 0);
-        if (!matchedAny) {
-          diag(`infotag[${name}] = ${JSON.stringify(value)}: candidate selector results:`,
-            JSON.stringify(matches));
-          matchedAny = true;
-        } else {
-          diag(`infotag[${name}] = ${JSON.stringify(value)}: matched =`,
-            matched ? matched.sel : 'NONE');
+        const el = form.querySelector(`[name="info_${name}"]`);
+        if (!el) {
+          diag(`infotag[${name}] no element matched — skipping`);
+          continue;
         }
-        if (matched) {
-          const el = form.querySelector(matched.sel);
-          if (el.tagName === 'SELECT') await setSelectValue(el, value);
-          else setTextFieldValue(el, value);
-          result.fields++;
-        }
+        if (el.tagName === 'SELECT') await setSelectValue(el, value);
+        else setTextFieldValue(el, value);
+        result.fields++;
       }
-      diagGroupEnd();
     }
+    diagGroupEnd();
 
-    if (data.kinks && Object.keys(data.kinks).length > 0) {
-      diagGroup('KINKS');
-      let matchedAny = false;
-      for (const [name, value] of Object.entries(data.kinks)) {
-        const candidates = [
-          `[name="${name}"]`,
-          `[name="fetish_${name}"]`,
-          `[name="kink_${name}"]`,
-          `[name="kink[${name}]"]`,
-          `[name="kinks[${name}]"]`,
-          `#kink_${name}`,
-          `#fetish_${name}`,
-        ];
-        const matches = candidates.map((sel) => {
-          try { return { sel, count: form.querySelectorAll(sel).length }; }
-          catch { return { sel, count: 0 }; }
-        });
-        const matched = matches.find((m) => m.count > 0);
-        if (!matchedAny) {
-          diag(`kink[${name}] = ${JSON.stringify(value)}: candidate selector results:`,
-            JSON.stringify(matches));
-          matchedAny = true;
-        } else {
-          diag(`kink[${name}] = ${JSON.stringify(value)}: matched =`,
-            matched ? matched.sel : 'NONE');
-        }
-        if (matched) {
-          const el = form.querySelector(matched.sel);
-          if (el.tagName === 'SELECT') await setSelectValue(el, value);
-          else setTextFieldValue(el, value);
-          result.kinks++;
-        }
-      }
-      diagGroupEnd();
+    diagGroup('KINKS — clear all then apply');
+    const allKinkSelects = Array.from(form.querySelectorAll('select[name^="fetish_"]'));
+    diag('resetting', allKinkSelects.length, 'fetish_* selects to undecided');
+    for (const el of allKinkSelects) {
+      await setSelectValue(el, 'undecided');
     }
+    if (data.kinks) {
+      for (const [name, value] of Object.entries(data.kinks)) {
+        const el = form.querySelector(`[name="fetish_${name}"]`);
+        if (!el) {
+          diag(`kink[${name}] no element matched — skipping`);
+          continue;
+        }
+        if (el.tagName === 'SELECT') await setSelectValue(el, value);
+        else setTextFieldValue(el, value);
+        result.kinks++;
+      }
+    }
+    diagGroupEnd();
 
     // Custom kinks: clear existing via page-world (so FList teardown +
     // jQuery handlers fire), add the new ones via FList.CharEditor_addKink,
@@ -508,18 +486,29 @@
     });
   }
 
-  function uploadAvatarBytes(bytes, filename) {
-    return new Promise((resolve, reject) => {
-      const fileInput = document.getElementById('avatar-file');
-      if (!fileInput) return reject(new Error('Avatar file input not found'));
-      const mime = filename.endsWith('.png') ? 'image/png'
-                 : filename.endsWith('.gif') ? 'image/gif' : 'image/jpeg';
-      const file = new File([new Blob([bytes], { type: mime })], filename, { type: mime });
-      const dt = new DataTransfer();
-      dt.items.add(file);
-      fileInput.files = dt.files;
-      resolve(true);
-    });
+  async function uploadAvatarBytes(bytes, filename) {
+    // F-list's avatar file input is name="avatar" (diag confirmed) —
+    // the userscript I ported from looked up `#avatar-file` which is
+    // wrong for current F-list. Try the right name, fall back to a
+    // few alternates if F-list changes the markup.
+    const fileInput =
+      document.querySelector('input[type="file"][name="avatar"]') ||
+      document.getElementById('avatar-file') ||
+      document.querySelector('input[type="file"][id*="avatar" i]');
+    diag(`uploadAvatar: input matched = ${!!fileInput}`,
+      fileInput ? `(name="${fileInput.name}" id="${fileInput.id}")` : '');
+    if (!fileInput) throw new Error('Avatar file input not found');
+    const mime = filename.endsWith('.png') ? 'image/png'
+               : filename.endsWith('.gif') ? 'image/gif' : 'image/jpeg';
+    const file = new File([new Blob([bytes], { type: mime })], filename, { type: mime });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    fileInput.files = dt.files;
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+    // Trigger F-list's main-world avatar upload helper if one exists.
+    const r = await callPage('uploadAvatar', {}, 15_000);
+    diag('uploadAvatar RPC result:', JSON.stringify(r));
+    return true;
   }
 
   function deleteImageById(imageId) {
