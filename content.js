@@ -678,6 +678,80 @@
     return { willDelete, willAdd };
   }
 
+  // Diff the working-copy data against the current edit-form state so the
+  // restore dialog can dim unchanged sections and show edit magnitudes.
+  // current is whatever extractCharacterFormState() returns on the same page.
+  function computeRestoreDiff(zipData, current) {
+    const zd = zipData || {};
+    const zDesc = zd.character?.description || '';
+    const cDesc = current.character?.description || '';
+    const zTitle = zd.character?.customTitle || '';
+    const cTitle = current.character?.customTitle || '';
+
+    const description = {
+      changed: zDesc !== cDesc || zTitle !== cTitle,
+      descChanged: zDesc !== cDesc,
+      titleChanged: zTitle !== cTitle,
+      newLen: zDesc.length,
+      oldLen: cDesc.length,
+      newTitle: zTitle,
+      oldTitle: cTitle,
+    };
+
+    const zSettings = zd.settings || {};
+    const cSettings = current.settings || {};
+    const settingKeys = new Set([...Object.keys(zSettings), ...Object.keys(cSettings)]);
+    let settingDiff = 0;
+    settingKeys.forEach((k) => {
+      if (String(zSettings[k] ?? '') !== String(cSettings[k] ?? '')) settingDiff += 1;
+    });
+    const settings = {
+      changed: settingDiff > 0,
+      total: Object.keys(zSettings).length,
+      diff: settingDiff,
+    };
+
+    function tagDiff(z, c) {
+      const keys = new Set([...Object.keys(z || {}), ...Object.keys(c || {})]);
+      let added = 0, removed = 0, modified = 0;
+      keys.forEach((k) => {
+        const zv = (z || {})[k];
+        const cv = (c || {})[k];
+        const zHas = zv !== undefined && zv !== '';
+        const cHas = cv !== undefined && cv !== '';
+        if (zHas && !cHas) added += 1;
+        else if (!zHas && cHas) removed += 1;
+        else if (String(zv) !== String(cv)) modified += 1;
+      });
+      return { added, removed, modified, changed: added + removed + modified > 0 };
+    }
+    const infotags = tagDiff(zd.infotags, current.infotags);
+    infotags.total = Object.keys(zd.infotags || {}).length;
+    const kinks = tagDiff(zd.kinks, current.kinks);
+    kinks.total = Object.keys(zd.kinks || {}).length;
+
+    const zCustom = zd.customKinks || [];
+    const cCustom = current.customKinks || [];
+    function ckKey(k) { return (k.name || '').trim().toLowerCase(); }
+    const zMap = new Map(zCustom.map((k) => [ckKey(k), k]));
+    const cMap = new Map(cCustom.map((k) => [ckKey(k), k]));
+    let ckAdded = 0, ckRemoved = 0, ckModified = 0;
+    zMap.forEach((zk, key) => {
+      const ck = cMap.get(key);
+      if (!ck) ckAdded += 1;
+      else if ((zk.description || '') !== (ck.description || '') ||
+               (zk.choice || '') !== (ck.choice || '')) ckModified += 1;
+    });
+    cMap.forEach((_, key) => { if (!zMap.has(key)) ckRemoved += 1; });
+    const customKinks = {
+      changed: ckAdded + ckRemoved + ckModified > 0,
+      total: zCustom.length,
+      added: ckAdded, removed: ckRemoved, modified: ckModified,
+    };
+
+    return { description, settings, infotags, kinks, customKinks };
+  }
+
   function fmtRelative(iso) {
     if (!iso) return 'unknown';
     const t = Date.parse(iso);
@@ -694,7 +768,15 @@
     const backupImages = data?.images?.list || [];
     const { willDelete, willAdd } = diffImageSets(current.images, backupImages);
 
-    const descChars = (data?.character?.description || '').length;
+    // Form-side diff against current edit-page values so unchanged
+    // sections render as "no changes" instead of looking like they'll
+    // overwrite. extractCharacterFormState throws if the form is missing
+    // — we already require the edit page for the rest of the flow, but
+    // a try/catch keeps the dialog resilient.
+    let formDiff = null;
+    try { formDiff = computeRestoreDiff(data || {}, extractCharacterFormState()); }
+    catch (e) { warn('restore diff failed:', e); }
+
     const customTitle = data?.character?.customTitle || '';
     const settingsCount = Object.keys(data?.settings || {}).length;
     const infotagsCount = Object.keys(data?.infotags || {}).length;
@@ -713,10 +795,11 @@
       `,
     }));
 
-    body.appendChild(makeEl('div', {
+    const checklistTitle = makeEl('div', {
       class: 'flist-wb-checklist-title',
-      text: 'Choose what to restore:',
-    }));
+      html: 'Choose what to restore: <span class="flist-wb-hint" tabindex="0" aria-label="diff help" data-tip="Counts shown here are the diff vs the page you’re looking at. For a field-level diff with old/new values side by side, open the character in Workbench → Diff tab.">?</span>',
+    });
+    body.appendChild(checklistTitle);
 
     // Each row: checkbox + label + count/summary + optional warn pill.
     const checklist = makeEl('div', { class: 'flist-wb-checklist' });
@@ -724,10 +807,13 @@
 
     const cbs = {};
     function row(id, label, summary, opts = {}) {
-      const wrapper = makeEl('label', { class: 'flist-wb-check-row' + (opts.warn ? ' warn' : '') });
+      const cls = ['flist-wb-check-row'];
+      if (opts.warn) cls.push('warn');
+      if (opts.unchanged) cls.push('unchanged');
+      const wrapper = makeEl('label', { class: cls.join(' ') });
       const cb = makeEl('input', { type: 'checkbox', id: `flist-wb-restore-${id}` });
       cb.checked = !!opts.defaultChecked;
-      if (opts.disabled) {
+      if (opts.disabled || opts.unchanged) {
         cb.disabled = true;
         cb.checked = false;
       }
@@ -741,35 +827,86 @@
       return cb;
     }
 
-    row('description', 'Description & custom title',
-      `${descChars} char${descChars === 1 ? '' : 's'}${customTitle ? ` · title "${escapeHtml(customTitle)}"` : ''}`,
-      { defaultChecked: descChars > 0 || !!customTitle });
+    const noChangeSummary = 'no changes vs current page';
 
-    row('settings', 'Settings',
-      `${settingsCount} toggle${settingsCount === 1 ? '' : 's'}`,
-      { defaultChecked: settingsCount > 0 });
+    // Description & custom title — show length delta when the body
+    // differs so the magnitude of the edit is visible at a glance.
+    {
+      const d = formDiff?.description;
+      let summary, unchanged = false;
+      if (d && !d.changed) {
+        summary = noChangeSummary;
+        unchanged = true;
+      } else if (d) {
+        const parts = [];
+        if (d.descChanged) {
+          const delta = d.newLen - d.oldLen;
+          const sign = delta > 0 ? '+' : '';
+          parts.push(`description differs (${d.oldLen} → ${d.newLen} chars · Δ${sign}${delta})`);
+        }
+        if (d.titleChanged) {
+          parts.push(d.newTitle ? `title → "${escapeHtml(d.newTitle)}"` : 'title cleared');
+        }
+        summary = parts.join(' · ');
+      } else {
+        // Diff unavailable — fall back to raw counts.
+        const descChars = (data?.character?.description || '').length;
+        summary = `${descChars} char${descChars === 1 ? '' : 's'}${customTitle ? ` · title "${escapeHtml(customTitle)}"` : ''}`;
+      }
+      row('description', 'Description & custom title', summary,
+        { defaultChecked: !unchanged && (formDiff?.description?.changed ?? true), unchanged });
+    }
 
-    // Empty categories default to CHECKED — the auto pre-restore
-    // backup + Workbench's own backups give us safe recovery, so we
-    // prefer "fully overwrite" semantic. The summary text on empty
-    // rows is explicit about what it'll wipe.
-    row('infotags', 'Profile fields (infotags)',
-      infotagsCount > 0
-        ? `${infotagsCount} entries — others on the page will be cleared first`
-        : '<strong style="color:#f0c8a0">⚠ empty in this backup — leaving this checked will clear ALL profile fields on the page</strong>',
-      { defaultChecked: true });
+    // Settings — count toggles whose values actually differ.
+    {
+      const s = formDiff?.settings;
+      let summary, unchanged = false;
+      if (s && !s.changed) { summary = noChangeSummary; unchanged = true; }
+      else if (s) summary = `${s.diff} of ${s.total} toggle${s.total === 1 ? '' : 's'} differ`;
+      else summary = `${settingsCount} toggle${settingsCount === 1 ? '' : 's'}`;
+      row('settings', 'Settings', summary,
+        { defaultChecked: !unchanged && (formDiff?.settings?.changed ?? true), unchanged });
+    }
 
-    row('kinks', 'Default kinks',
-      kinksCount > 0
-        ? `${kinksCount} entries — others on the page will be reset to <em>undecided</em>`
-        : '<strong style="color:#f0c8a0">⚠ empty in this backup — leaving this checked will reset ALL 559 kinks to undecided</strong>',
-      { defaultChecked: true });
+    // Empty-restore rows still warn about clearing the page even when
+    // the ZIP itself is empty, but only when there's actually something
+    // on the page to clear — otherwise mark as unchanged.
+    function diffSummary(d, label, fallbackCount, emptyWarn) {
+      if (!d) {
+        return {
+          summary: fallbackCount > 0
+            ? `${fallbackCount} entries — ${label}`
+            : `<strong style="color:#f0c8a0">⚠ ${emptyWarn}</strong>`,
+          defaultChecked: true,
+          unchanged: false,
+        };
+      }
+      if (!d.changed) return { summary: noChangeSummary, defaultChecked: false, unchanged: true };
+      const parts = [];
+      if (d.added) parts.push(`${d.added} added`);
+      if (d.modified) parts.push(`${d.modified} changed`);
+      if (d.removed) parts.push(`${d.removed} cleared`);
+      return { summary: parts.join(', '), defaultChecked: true, unchanged: false };
+    }
 
-    row('customKinks', 'Custom kinks',
-      customKinksCount > 0
-        ? `${customKinksCount} entries — existing custom kinks on page will be replaced`
-        : '<strong style="color:#f0c8a0">⚠ empty in this backup — leaving this checked will remove ALL existing custom kinks</strong>',
-      { defaultChecked: true });
+    {
+      const r = diffSummary(formDiff?.infotags, 'others on the page will be cleared first',
+        infotagsCount, 'empty in this backup — leaving this checked will clear ALL profile fields on the page');
+      row('infotags', 'Profile fields (infotags)', r.summary,
+        { defaultChecked: r.defaultChecked, unchanged: r.unchanged });
+    }
+    {
+      const r = diffSummary(formDiff?.kinks, 'others on the page will be reset to <em>undecided</em>',
+        kinksCount, 'empty in this backup — leaving this checked will reset ALL 559 kinks to undecided');
+      row('kinks', 'Default kinks', r.summary,
+        { defaultChecked: r.defaultChecked, unchanged: r.unchanged });
+    }
+    {
+      const r = diffSummary(formDiff?.customKinks, 'existing custom kinks on page will be replaced',
+        customKinksCount, 'empty in this backup — leaving this checked will remove ALL existing custom kinks');
+      row('customKinks', 'Custom kinks', r.summary,
+        { defaultChecked: r.defaultChecked, unchanged: r.unchanged });
+    }
 
     row('avatar', 'Avatar',
       avatarInZip
