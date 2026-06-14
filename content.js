@@ -598,7 +598,7 @@
   // 64 MiB IPC ceiling. Direct fetch is cross-origin (page is on
   // f-list.net, sidecar on 127.0.0.1) but the sidecar's CORS middleware
   // is allow-all, so the response lands cleanly as an ArrayBuffer.
-  const SIDECAR_BASE = 'http://127.0.0.1:8765';
+  const SIDECAR_BASE = 'http://127.0.0.1:27384';
 
   async function getStoredToken() {
     try {
@@ -868,7 +868,7 @@
 
   function explainError(res) {
     if (!res) return 'No response.';
-    if (res.error === 'unreachable') return 'Workbench sidecar is not reachable on 127.0.0.1:8765. Is Workbench running?';
+    if (res.error === 'unreachable') return 'Workbench sidecar is not reachable on 127.0.0.1:27384. Is Workbench running?';
     if (res.error === 'not_paired') return 'Extension is not paired with Workbench yet. Click the extension icon to pair.';
     if (res.status === 401) return 'Pairing token rejected. Re-pair the extension via Workbench Settings → Security.';
     return `${res.error || 'Unknown error'}${res.detail ? ': ' + res.detail : ''}`;
