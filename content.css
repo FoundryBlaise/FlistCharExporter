@@ -274,6 +274,8 @@
 .flist-wb-check-row.unchanged:hover { background: transparent; }
 .flist-wb-check-row.unchanged input[type="checkbox"] { cursor: not-allowed; }
 .flist-wb-check-row.unchanged .flist-wb-check-summary { font-style: italic; }
+.flist-wb-check-row.indent { padding-left: 36px; border-top: none; }
+.flist-wb-check-row.indent .flist-wb-check-label::before { content: "↳ "; opacity: 0.5; }
 
 .flist-wb-hint {
   display: inline-flex;
