@@ -29,7 +29,7 @@ Save yourself.
 
 ## Pairing
 
-The extension talks to Workbench's local sidecar at `127.0.0.1:8765`
+The extension talks to Workbench's local sidecar at `127.0.0.1:27384`
 using a per-install auth token. First use:
 
 1. Start the F-list Workbench app.
@@ -100,7 +100,7 @@ edit page — pick one.
 This extension:
 
 - Runs only on `https://www.f-list.net/character_edit.php*`.
-- Talks to `http://127.0.0.1:8765` (your local Workbench sidecar).
+- Talks to `http://127.0.0.1:27384` (your local Workbench sidecar).
 - Talks to `https://static.f-list.net/*` for image bytes during the
   restore.
 - Stores only the Workbench pairing token in `chrome.storage.local`.

@@ -90,7 +90,7 @@ async function showUnpaired() {
       pairBtn.textContent = 'Pair with Workbench';
     },
   });
-  hintEl.innerHTML = `Workbench sidecar lives at <code>127.0.0.1:8765</code>. If pairing fails, make sure Workbench is running.`;
+  hintEl.innerHTML = `Workbench sidecar lives at <code>127.0.0.1:27384</code>. If pairing fails, make sure Workbench is running.`;
 }
 
 async function render() {
