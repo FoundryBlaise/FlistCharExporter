@@ -186,7 +186,7 @@
   // console which commit they're actually running (browser cache, CDN
   // staleness, "did I really click Reload?" — all easier to rule out
   // when the hash is right there in the diag header).
-  const EXT_BUILD = '3836ea4';
+  const EXT_BUILD = '602968a';
   const DIAG_PREFIX = `[F-list Workbench DIAG @ ${EXT_BUILD}]`;
   function diag(...args) { console.log(DIAG_PREFIX, ...args); }
   function diagGroup(title) { console.group(DIAG_PREFIX + ' ' + title); }
