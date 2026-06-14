@@ -79,6 +79,32 @@
           return { ok: false, error: String(e && e.message || e) };
         }
 
+      case 'setFetishChoice':
+        // F-list renders kinks as <input type="hidden" name="fetish_NN">
+        // backed by a JS-managed widget. Native el.value = '...' updates
+        // the form (so Save persists it) but the visible picker UI keeps
+        // its own state and never redraws. FList.Subfetish.Data.setFetishChoice
+        // is the same entry point F-list's own click handlers call —
+        // routes through both layers so the picker visibly flips and
+        // the underlying input ends up with the right value.
+        try {
+          if (
+            window.FList &&
+            window.FList.Subfetish &&
+            window.FList.Subfetish.Data &&
+            typeof window.FList.Subfetish.Data.setFetishChoice === 'function'
+          ) {
+            window.FList.Subfetish.Data.setFetishChoice(
+              String(args.id),
+              String(args.choice)
+            );
+            return { ok: true };
+          }
+          return { ok: false, error: 'FList.Subfetish.Data.setFetishChoice not available' };
+        } catch (e) {
+          return { ok: false, error: String(e && e.message || e) };
+        }
+
       case 'setSelectVal':
         // F-list wraps infotag selects with Select2-style widgets. Native
         // `.value = x` updates the underlying <select> but the visible
