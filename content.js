@@ -186,7 +186,7 @@
   // console which commit they're actually running (browser cache, CDN
   // staleness, "did I really click Reload?" — all easier to rule out
   // when the hash is right there in the diag header).
-  const EXT_BUILD = 'selectFetish-fix';
+  const EXT_BUILD = 'image-reorder';
   const DIAG_PREFIX = `[F-list Workbench DIAG @ ${EXT_BUILD}]`;
   function diag(...args) { console.log(DIAG_PREFIX, ...args); }
   function diagGroup(title) { console.group(DIAG_PREFIX + ' ' + title); }
@@ -697,6 +697,32 @@
     return { willDelete, willAdd };
   }
 
+  // Count how many images currently on profile would end up at a
+  // different gallery position once the restore runs (i.e. images that
+  // exist on both sides but in different order). Newly-uploaded entries
+  // and entries to be deleted don't contribute — they're handled by the
+  // upload/delete pass. The metric counts mismatches comparing only the
+  // subset of ids that survive the restore. Returns 0 when the order
+  // already matches.
+  function diffImageOrder(currentImages, backupImageList) {
+    const list = backupImageList || [];
+    if (list.length === 0) return 0;
+    const currentIds = new Set(currentImages.map((i) => i.id));
+    const backupIds = new Set(list.map(backupEntryImageId).filter(Boolean));
+    const survivingBackup = list
+      .map(backupEntryImageId)
+      .filter((id) => id && currentIds.has(id));
+    const survivingCurrent = currentImages
+      .map((i) => i.id)
+      .filter((id) => backupIds.has(id));
+    let mismatches = 0;
+    const limit = Math.min(survivingBackup.length, survivingCurrent.length);
+    for (let i = 0; i < limit; i++) {
+      if (survivingBackup[i] !== survivingCurrent[i]) mismatches++;
+    }
+    return mismatches;
+  }
+
   // Diff the working-copy data against the current edit-form state so the
   // restore dialog can dim unchanged sections and show edit magnitudes.
   // current is whatever extractCharacterFormState() returns on the same page.
@@ -854,6 +880,7 @@
       const cls = ['flist-wb-check-row'];
       if (opts.warn) cls.push('warn');
       if (opts.unchanged) cls.push('unchanged');
+      if (opts.indent) cls.push('indent');
       const wrapper = makeEl('label', { class: cls.join(' ') });
       const cb = makeEl('input', { type: 'checkbox', id: `flist-wb-restore-${id}` });
       cb.checked = !!opts.defaultChecked;
@@ -966,6 +993,17 @@
           ? '<em>no images in this backup — would delete every image currently on F-list</em>'
           : 'gallery already matches the backup — no changes'),
       { defaultChecked: backupImages.length > 0 && galleryWarn, warn: galleryWarn });
+
+    // Reorder runs LAST, after upload + delete, so the sub-row sits
+    // under "Gallery images" visually. Independent checkbox so the user
+    // can apply a pure order shuffle (no upload, no delete) — useful
+    // when the only delta is sort_order.
+    const willReorder = diffImageOrder(current.images, backupImages);
+    row('imageOrder', 'Image order',
+      willReorder > 0
+        ? `${willReorder} image${willReorder === 1 ? '' : 's'} will be moved to match the backup order — runs <em>after</em> upload + delete`
+        : (backupImages.length === 0 ? '<em>nothing to reorder</em>' : 'order already matches the backup'),
+      { defaultChecked: willReorder > 0, unchanged: willReorder === 0, indent: true });
 
     const confirmRow = makeEl('label', { class: 'flist-wb-confirm-row' });
     const confirmCb = makeEl('input', { type: 'checkbox', id: 'flist-wb-confirm-destructive' });
@@ -1236,7 +1274,10 @@
     }
 
     let outcome = 'completed';
-    let counts = { deleted: 0, uploaded: 0, deletePlanned: 0, uploadPlanned: 0 };
+    let counts = {
+      deleted: 0, uploaded: 0, reordered: 0, reorderFails: 0,
+      deletePlanned: 0, uploadPlanned: 0, reorderPlanned: 0,
+    };
     let result = { fields: 0, kinks: 0, customKinks: 0, warnings: [] };
 
     // Treat skipImages as the inverse of selections.images to keep the
@@ -1285,9 +1326,15 @@
       }
       diag('===END AVATAR===');
 
+      // backup-filename → final id once uploaded, so the reorder pass
+      // below can place freshly-minted ids in the right slot. Kept at
+      // method scope so the reorder block can read it even when uploads
+      // were skipped (in which case it's just empty).
+      const uploadedIdByFilename = new Map();
+      const backupImages = data?.images?.list || [];
+
       if (!skipImages) {
         const current = extractImageData();
-        const backupImages = data?.images?.list || [];
         const { willDelete } = diffImageSets(current.images, backupImages);
         counts.deletePlanned = willDelete.length;
 
@@ -1319,6 +1366,7 @@
                 const filename = meta.filename.split('/').pop();
                 const newId = await uploadSingleImage(bytes, filename);
                 counts.uploaded++;
+                if (newId) uploadedIdByFilename.set(meta.filename, String(newId));
                 if (meta.description && newId) {
                   const descInput = document.querySelector(`#image${newId} .character_image_description`);
                   if (descInput) descInput.value = meta.description;
@@ -1326,6 +1374,54 @@
               } catch (e) { warn('image upload failed', meta.filename, e); }
             }
           }
+        }
+      }
+
+      // Image reorder runs after upload + delete (so freshly-minted ids
+      // exist in uploadedIdByFilename) and is independently gated on
+      // selections.imageOrder — the user can apply a pure order shuffle
+      // even when neither uploading nor deleting. The only public
+      // primitive is window.moveImageToFrontBack(id, toFront); to
+      // converge an arbitrary permutation we iterate the desired order
+      // in REVERSE and call toFront=true on each id — after N calls the
+      // gallery ends front-to-back exactly matching desiredOrder.
+      {
+        const skipReorder = selections.imageOrder === false;
+        if (outcome !== 'cancelled' && backupImages.length > 0 && !skipReorder) {
+          const desiredOrder = backupImages
+            .map((entry) => {
+              const filenameId = uploadedIdByFilename.get(entry.filename);
+              if (filenameId) return filenameId;
+              const eid = backupEntryImageId(entry);
+              return eid || null;
+            })
+            .filter(Boolean);
+          const onProfileIds = new Set(
+            Array.from(document.querySelectorAll('.character_image'))
+              .map((c) => c.id.replace('image', ''))
+          );
+          const placeableOrder = desiredOrder.filter((id) => onProfileIds.has(id));
+          counts.reorderPlanned = placeableOrder.length;
+          diagGroup(`IMAGES — reorder ${placeableOrder.length} via moveImageToFrontBack`);
+          for (let i = placeableOrder.length - 1; i >= 0; i--) {
+            if (cancelToken.cancelled) { outcome = 'cancelled'; break; }
+            const id = placeableOrder[i];
+            progress.update(
+              `Reordering image ${placeableOrder.length - i}/${placeableOrder.length}`
+            );
+            const r = await callPage('moveImage', { id, toFront: true }, 4_000);
+            if (r.ok) counts.reordered++;
+            else if (counts.reorderFails < 3) {
+              diag(`moveImage ${id} → front failed:`, JSON.stringify(r));
+              counts.reorderFails++;
+            }
+            await new Promise((res) => setTimeout(res, 140));
+          }
+          diag(
+            `reorder: ${counts.reordered}/${counts.reorderPlanned} placed, ` +
+            `${counts.reorderFails} failed`
+          );
+          diagGroupEnd();
         }
       }
 
@@ -1343,7 +1439,7 @@
             `Form filled: ${result.fields} fields, ${result.kinks} kinks, ${result.customKinks} custom kinks. ` +
             (skipImages
               ? ''
-              : `Images: ${counts.uploaded} uploaded, ${counts.deleted} deleted. `) +
+              : `Images: ${counts.uploaded} uploaded, ${counts.deleted} deleted, ${counts.reordered} reordered. `) +
             `Review every field above, then click F-list's Save button — the extension will NOT click it for you.`,
           kind: 'success',
           durationMs: 0,

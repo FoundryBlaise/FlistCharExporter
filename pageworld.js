@@ -109,6 +109,29 @@
           return { ok: false, error: String(e && e.message || e) };
         }
 
+      case 'moveImage':
+        // F-list exposes window.moveImageToFrontBack(imageId, toFront)
+        // — the same function the per-row arrow `onclick` handlers call.
+        // toFront=true moves to the head of the list; toFront=false
+        // moves to the tail. There's no adjacent-swap primitive, so to
+        // converge an arbitrary permutation the caller iterates the
+        // desired order in REVERSE and calls toFront=true on each id —
+        // N calls regardless of starting order. The function uses a
+        // 100ms fadeOut animation, so the caller should pause ~150ms
+        // between calls to let each fade settle before the next runs.
+        try {
+          if (typeof window.moveImageToFrontBack === 'function') {
+            window.moveImageToFrontBack(
+              Number(args.id),
+              !!args.toFront
+            );
+            return { ok: true };
+          }
+          return { ok: false, error: 'moveImageToFrontBack not on page' };
+        } catch (e) {
+          return { ok: false, error: String(e && e.message || e) };
+        }
+
       case 'setSelectVal':
         // F-list wraps infotag selects with Select2-style widgets. Native
         // `.value = x` updates the underlying <select> but the visible
