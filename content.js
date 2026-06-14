@@ -711,36 +711,61 @@
       diff: settingDiff,
     };
 
+    // Workbench-emitted ZIPs key infotags/kinks by bare numeric id ("3",
+    // "580"), but extractCharacterFormState() keeps the full element
+    // name ("info_3", "fetish_580"). Strip the prefix on the page side
+    // so the diff lines up. We also tolerate legacy userscript ZIPs
+    // that may already be prefixed.
+    function stripPrefix(map, prefix) {
+      const out = {};
+      Object.entries(map || {}).forEach(([k, v]) => {
+        const bare = k.startsWith(prefix) ? k.slice(prefix.length) : k;
+        out[bare] = v;
+      });
+      return out;
+    }
+
     function tagDiff(z, c) {
       const keys = new Set([...Object.keys(z || {}), ...Object.keys(c || {})]);
       let added = 0, removed = 0, modified = 0;
       keys.forEach((k) => {
         const zv = (z || {})[k];
         const cv = (c || {})[k];
-        const zHas = zv !== undefined && zv !== '';
-        const cHas = cv !== undefined && cv !== '';
+        const zHas = zv !== undefined && zv !== '' && String(zv) !== 'undecided';
+        const cHas = cv !== undefined && cv !== '' && String(cv) !== 'undecided';
         if (zHas && !cHas) added += 1;
         else if (!zHas && cHas) removed += 1;
-        else if (String(zv) !== String(cv)) modified += 1;
+        else if (zHas && cHas && String(zv) !== String(cv)) modified += 1;
       });
       return { added, removed, modified, changed: added + removed + modified > 0 };
     }
-    const infotags = tagDiff(zd.infotags, current.infotags);
+    const infotags = tagDiff(
+      stripPrefix(zd.infotags, 'info_'),
+      stripPrefix(current.infotags, 'info_'),
+    );
     infotags.total = Object.keys(zd.infotags || {}).length;
-    const kinks = tagDiff(zd.kinks, current.kinks);
+    const kinks = tagDiff(
+      stripPrefix(zd.kinks, 'fetish_'),
+      stripPrefix(current.kinks, 'fetish_'),
+    );
     kinks.total = Object.keys(zd.kinks || {}).length;
 
     const zCustom = zd.customKinks || [];
     const cCustom = current.customKinks || [];
     function ckKey(k) { return (k.name || '').trim().toLowerCase(); }
+    // Page textareas emit CRLF; ZIPs are LF. Normalise both sides plus
+    // trim trailing whitespace so the diff doesn't fire on cosmetic
+    // line-ending differences alone.
+    function normDesc(s) { return String(s || '').replace(/\r\n/g, '\n').trimEnd(); }
+    function normChoice(s) { return String(s || '').trim() || 'undecided'; }
     const zMap = new Map(zCustom.map((k) => [ckKey(k), k]));
     const cMap = new Map(cCustom.map((k) => [ckKey(k), k]));
     let ckAdded = 0, ckRemoved = 0, ckModified = 0;
     zMap.forEach((zk, key) => {
       const ck = cMap.get(key);
       if (!ck) ckAdded += 1;
-      else if ((zk.description || '') !== (ck.description || '') ||
-               (zk.choice || '') !== (ck.choice || '')) ckModified += 1;
+      else if (normDesc(zk.description) !== normDesc(ck.description) ||
+               normChoice(zk.choice) !== normChoice(ck.choice)) ckModified += 1;
     });
     cMap.forEach((_, key) => { if (!zMap.has(key)) ckRemoved += 1; });
     const customKinks = {
