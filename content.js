@@ -341,10 +341,17 @@
 
     if (selections.kinks !== false) {
       diagGroup('KINKS — clear all then apply');
-      const allKinkSelects = Array.from(form.querySelectorAll('select[name^="fetish_"]'));
-      diag('resetting', allKinkSelects.length, 'fetish_* selects to undecided');
-      for (const el of allKinkSelects) {
-        await setSelectValue(el, 'undecided');
+      // Tag-agnostic selector: F-list does not consistently render kinks
+      // as <select> on every layout, so filtering on `select[name^=...]`
+      // would silently match zero elements and turn the reset into a
+      // no-op — kinks the user removed in Workbench would keep their
+      // old page value. Userscript reference uses the same name-only
+      // selector for the same reason (see flist-character-exporter.user.js).
+      const allKinkFields = Array.from(form.querySelectorAll('[name^="fetish_"]'));
+      diag('resetting', allKinkFields.length, 'fetish_* fields to undecided');
+      for (const el of allKinkFields) {
+        if (el.tagName === 'SELECT') await setSelectValue(el, 'undecided');
+        else setTextFieldValue(el, 'undecided');
       }
       if (data.kinks) {
         for (const [name, value] of Object.entries(data.kinks)) {
