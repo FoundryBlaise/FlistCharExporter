@@ -935,9 +935,9 @@
 
     row('avatar', 'Avatar',
       avatarInZip
-        ? '1 avatar in this backup'
+        ? '1 avatar in this backup — <em>cannot diff against current avatar, tick only if you want to replace it</em>'
         : '<em>no avatar bundled in this backup</em>',
-      { defaultChecked: avatarInZip, disabled: !avatarInZip });
+      { defaultChecked: false, disabled: !avatarInZip });
 
     const galleryWarn = willDelete.length > 0 || willAdd.length > 0;
     row('images', 'Gallery images',
