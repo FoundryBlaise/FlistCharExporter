@@ -186,7 +186,7 @@
   // console which commit they're actually running (browser cache, CDN
   // staleness, "did I really click Reload?" — all easier to rule out
   // when the hash is right there in the diag header).
-  const EXT_BUILD = '602968a';
+  const EXT_BUILD = 'selectFetish-fix';
   const DIAG_PREFIX = `[F-list Workbench DIAG @ ${EXT_BUILD}]`;
   function diag(...args) { console.log(DIAG_PREFIX, ...args); }
   function diagGroup(title) { console.group(DIAG_PREFIX + ' ' + title); }
@@ -340,20 +340,20 @@
     }
 
     if (selections.kinks !== false) {
-      diagGroup('KINKS — diff-only apply via FList.Subfetish.Data.setFetishChoice');
-      // F-list renders each kink as <input type="hidden" name="fetish_NN">
-      // backed by a JS-managed picker widget. Setting el.value directly
-      // only updates the form input — the visible widget keeps its own
-      // state, so the user sees no change even though Save would
-      // technically persist. Route every choice through F-list's own
-      // setFetishChoice so both layers stay in sync (verified via DOM
-      // probe 2026-06-14: hidden inputs + FList.Subfetish.Data.setFetishChoice).
+      diagGroup('KINKS — diff-only apply via FList.CharEditor_selectFetish');
+      // F-list's edit-page kink picker is a click-driven widget: each
+      // kink has #FetishSelect<id> (hidden input, name="fetish_<id>")
+      // plus .FetishLink<id> + .FetishImage<id> visual chips. The
+      // function FList.CharEditor_selectFetish(id, choice, force) is
+      // the same entry point the click handlers invoke — updates the
+      // hidden input + toggles the chip CSS classes in lockstep, so
+      // both layers stay in sync (no "form saves but picker doesn't
+      // move" trust gap on restore).
       //
-      // Diff-only: each setFetishChoice call triggers a picker re-render,
-      // so a naive reset-all + apply-all on 559 standard kinks would fire
-      // ~1100 widget updates. Compute the minimal change set against the
-      // current page state and only emit calls where the value actually
-      // differs.
+      // Diff-only: only emit calls where the kink's current page value
+      // differs from the working-set target. Saves 500+ no-op redraws
+      // on a typical restore where most standards are undecided on
+      // both sides.
       const allKinkFields = Array.from(form.querySelectorAll('[name^="fetish_"]'));
       const targetMap = new Map();
       if (data.kinks) {
@@ -367,13 +367,13 @@
         const current = el.value || 'undecided';
         const target = targetMap.get(id) || 'undecided';
         if (current === target) { skipped++; continue; }
-        const r = await callPage('setFetishChoice', { id, choice: target }, 4_000);
+        const r = await callPage('selectFetish', { id, choice: target }, 4_000);
         if (r.ok) {
           changes++;
           if (target !== 'undecided') result.kinks++;
         } else {
           fails++;
-          if (fails <= 3) diag(`setFetishChoice fetish_${id} → ${target} failed:`, JSON.stringify(r));
+          if (fails <= 3) diag(`selectFetish fetish_${id} → ${target} failed:`, JSON.stringify(r));
         }
       }
       diag(`kinks: ${changes} changed, ${skipped} already-matching, ${fails} failed`);

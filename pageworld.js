@@ -79,28 +79,32 @@
           return { ok: false, error: String(e && e.message || e) };
         }
 
-      case 'setFetishChoice':
-        // F-list renders kinks as <input type="hidden" name="fetish_NN">
-        // backed by a JS-managed widget. Native el.value = '...' updates
-        // the form (so Save persists it) but the visible picker UI keeps
-        // its own state and never redraws. FList.Subfetish.Data.setFetishChoice
-        // is the same entry point F-list's own click handlers call —
-        // routes through both layers so the picker visibly flips and
-        // the underlying input ends up with the right value.
+      case 'selectFetish':
+        // F-list's own per-kink chooser. Mirrors what its click handlers
+        // call: updates #FetishSelect<id>.val + toggles
+        // .FetishLink<id> / .FetishImage<id> CSS classes so the visible
+        // picker chip flips and the underlying hidden input ends up
+        // with the right value, in lockstep. The 3rd arg "force" makes
+        // the function take the apply branch unconditionally; without
+        // it, calling with the same choice the kink already has would
+        // toggle it back to "undecided" (the click handler's normal
+        // "click-the-active-chip-to-clear" behaviour). For 'undecided'
+        // target the apply branch still does the right thing — the
+        // #FetishLink<undecided><id> selector silently no-ops and
+        // FetishChoicePicked is removed from all chips of that id.
         try {
           if (
             window.FList &&
-            window.FList.Subfetish &&
-            window.FList.Subfetish.Data &&
-            typeof window.FList.Subfetish.Data.setFetishChoice === 'function'
+            typeof window.FList.CharEditor_selectFetish === 'function'
           ) {
-            window.FList.Subfetish.Data.setFetishChoice(
+            window.FList.CharEditor_selectFetish(
               String(args.id),
-              String(args.choice)
+              String(args.choice),
+              true
             );
             return { ok: true };
           }
-          return { ok: false, error: 'FList.Subfetish.Data.setFetishChoice not available' };
+          return { ok: false, error: 'FList.CharEditor_selectFetish not available' };
         } catch (e) {
           return { ok: false, error: String(e && e.message || e) };
         }
