@@ -340,31 +340,43 @@
     }
 
     if (selections.kinks !== false) {
-      diagGroup('KINKS — clear all then apply');
-      // Tag-agnostic selector: F-list does not consistently render kinks
-      // as <select> on every layout, so filtering on `select[name^=...]`
-      // would silently match zero elements and turn the reset into a
-      // no-op — kinks the user removed in Workbench would keep their
-      // old page value. Userscript reference uses the same name-only
-      // selector for the same reason (see flist-character-exporter.user.js).
+      diagGroup('KINKS — diff-only apply via FList.Subfetish.Data.setFetishChoice');
+      // F-list renders each kink as <input type="hidden" name="fetish_NN">
+      // backed by a JS-managed picker widget. Setting el.value directly
+      // only updates the form input — the visible widget keeps its own
+      // state, so the user sees no change even though Save would
+      // technically persist. Route every choice through F-list's own
+      // setFetishChoice so both layers stay in sync (verified via DOM
+      // probe 2026-06-14: hidden inputs + FList.Subfetish.Data.setFetishChoice).
+      //
+      // Diff-only: each setFetishChoice call triggers a picker re-render,
+      // so a naive reset-all + apply-all on 559 standard kinks would fire
+      // ~1100 widget updates. Compute the minimal change set against the
+      // current page state and only emit calls where the value actually
+      // differs.
       const allKinkFields = Array.from(form.querySelectorAll('[name^="fetish_"]'));
-      diag('resetting', allKinkFields.length, 'fetish_* fields to undecided');
-      for (const el of allKinkFields) {
-        if (el.tagName === 'SELECT') await setSelectValue(el, 'undecided');
-        else setTextFieldValue(el, 'undecided');
-      }
+      const targetMap = new Map();
       if (data.kinks) {
-        for (const [name, value] of Object.entries(data.kinks)) {
-          const el = form.querySelector(`[name="fetish_${name}"]`);
-          if (!el) {
-            diag(`kink[${name}] no element matched — skipping`);
-            continue;
-          }
-          if (el.tagName === 'SELECT') await setSelectValue(el, value);
-          else setTextFieldValue(el, value);
-          result.kinks++;
+        for (const [k, v] of Object.entries(data.kinks)) {
+          targetMap.set(String(k), String(v));
         }
       }
+      let changes = 0, fails = 0, skipped = 0;
+      for (const el of allKinkFields) {
+        const id = el.name.replace(/^fetish_/, '');
+        const current = el.value || 'undecided';
+        const target = targetMap.get(id) || 'undecided';
+        if (current === target) { skipped++; continue; }
+        const r = await callPage('setFetishChoice', { id, choice: target }, 4_000);
+        if (r.ok) {
+          changes++;
+          if (target !== 'undecided') result.kinks++;
+        } else {
+          fails++;
+          if (fails <= 3) diag(`setFetishChoice fetish_${id} → ${target} failed:`, JSON.stringify(r));
+        }
+      }
+      diag(`kinks: ${changes} changed, ${skipped} already-matching, ${fails} failed`);
       diagGroupEnd();
     } else {
       diag('kinks: skipped (unchecked)');
