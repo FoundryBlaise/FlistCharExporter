@@ -1538,8 +1538,39 @@
     const warningSlot = makeEl('div');
     modal.body.appendChild(warningSlot);
 
+    // Tab strip: Working Sets / Backups. Sets first because that's
+    // what gets used most often. Switching between tabs re-renders
+    // the row list from the cached snapshot response — one network
+    // round-trip per character pick, not per tab click.
+    const tabStrip = makeEl('div', { class: 'flist-wb-tabs', role: 'tablist' });
+    const tabSets = makeEl('button', {
+      class: 'flist-wb-tab flist-wb-tab-active',
+      type: 'button',
+      role: 'tab',
+      text: 'Working sets',
+    });
+    const tabBackups = makeEl('button', {
+      class: 'flist-wb-tab',
+      type: 'button',
+      role: 'tab',
+      text: 'Backups',
+    });
+    tabStrip.appendChild(tabSets);
+    tabStrip.appendChild(tabBackups);
+    modal.body.appendChild(tabStrip);
+
     const listSlot = makeEl('div');
     modal.body.appendChild(listSlot);
+
+    const switchTab = (next) => {
+      if (next === activeTab) return;
+      activeTab = next;
+      tabSets.classList.toggle('flist-wb-tab-active', next === 'sets');
+      tabBackups.classList.toggle('flist-wb-tab-active', next === 'backups');
+      renderListContent();
+    };
+    tabSets.addEventListener('click', () => switchTab('sets'));
+    tabBackups.addEventListener('click', () => switchTab('backups'));
 
     const renderWarning = () => {
       warningSlot.innerHTML = '';
@@ -1551,6 +1582,111 @@
       }
     };
 
+    // Active tab — defaults to 'sets' because that's what the user
+    // will pick most of the time (per the 2026-06-18 brief). Switch
+    // to 'backups' is one click away and persisted only across this
+    // dialog lifecycle.
+    let activeTab = 'sets';
+    let snapshotsCache = null;
+
+    const renderRow = (s) => {
+      const row = makeEl('div', { class: 'flist-wb-snapshot-row' });
+      const kindClass = String(s.kind || '').replace(/[^a-z-]/gi, '');
+      row.appendChild(makeEl('span', {
+        class: `flist-wb-snapshot-kind ${kindClass}`,
+        text: KIND_LABEL[s.kind] || s.kind || '?',
+      }));
+      row.appendChild(makeEl('span', { text: s.label || s.id }));
+      row.appendChild(makeEl('span', {
+        class: 'flist-wb-snapshot-meta',
+        text: `${s.image_count || 0} images · ${fmtRelative(s.created_at)}`,
+      }));
+      row.addEventListener('click', () => {
+        listSlot.querySelectorAll('.flist-wb-snapshot-row').forEach((r) => r.classList.remove('selected'));
+        row.classList.add('selected');
+        selected = s;
+        loadBtn.disabled = false;
+      });
+      return row;
+    };
+
+    // Backups bucketed by their backup-meta kind. Mirrors the app's
+    // sidebar Backups list. Always-present folders (even empty) keep
+    // the taxonomy obvious; "Other" (unknown/pre-restore) only shows
+    // when populated.
+    const BACKUP_BUCKETS = [
+      { id: 'manual', label: 'Manual backups', kinds: ['manual_single', 'manual_bulk'], alwaysShow: true },
+      { id: 'automatic', label: 'Automatic backups', kinds: ['import'], alwaysShow: true },
+      { id: 'scheduled', label: 'Scheduled backups', kinds: ['scheduled'], alwaysShow: true },
+      { id: 'other', label: 'Other backups', kinds: ['unknown', null, undefined], alwaysShow: false },
+    ];
+
+    const renderListContent = () => {
+      selected = null;
+      loadBtn.disabled = true;
+      listSlot.innerHTML = '';
+      const snapshots = snapshotsCache || [];
+
+      if (activeTab === 'sets') {
+        const sets = snapshots.filter((s) => s.kind === 'set');
+        // Also surface the live ("From F-list") entry on the Working
+        // Sets tab — it lives next to the user's working sets in the
+        // app's sidebar, so it belongs in the same tab here.
+        const live = snapshots.find((s) => s.kind === 'live');
+        if (live) listSlot.appendChild(renderRow(live));
+        if (sets.length === 0 && !live) {
+          listSlot.appendChild(makeEl('div', {
+            class: 'flist-wb-info-box',
+            text: `No working sets for "${sourceCharacter}" yet. Open the character in Workbench and click + New working set.`,
+          }));
+          return;
+        }
+        sets.forEach((s) => listSlot.appendChild(renderRow(s)));
+        return;
+      }
+
+      // Backups tab — bucket by backup_kind into the three default
+      // folders (Manual / Automatic / Scheduled), plus Pre-restore
+      // when present. Each bucket renders a header even when empty
+      // so the taxonomy stays visible. Pre-restore stays in its own
+      // bucket (legacy auto-backup taken right before a restore
+      // action; useful for emergency undo).
+      const backups = snapshots.filter((s) => s.kind === 'backup');
+      const preRestores = snapshots.filter((s) => s.kind === 'pre-restore');
+      if (backups.length === 0 && preRestores.length === 0) {
+        listSlot.appendChild(makeEl('div', {
+          class: 'flist-wb-info-box',
+          text: `No backups for "${sourceCharacter}" yet. In Workbench: right-click the character → Back up now.`,
+        }));
+        return;
+      }
+
+      BACKUP_BUCKETS.forEach((bucket) => {
+        const entries = backups.filter((s) => bucket.kinds.includes(s.backup_kind));
+        if (!bucket.alwaysShow && entries.length === 0) return;
+        const folder = makeEl('div', { class: 'flist-wb-backup-folder' });
+        const head = makeEl('div', { class: 'flist-wb-backup-folder-h' });
+        head.appendChild(makeEl('span', { class: 'flist-wb-backup-folder-title', text: bucket.label }));
+        head.appendChild(makeEl('span', { class: 'flist-wb-backup-folder-count', text: String(entries.length) }));
+        folder.appendChild(head);
+        if (entries.length === 0) {
+          folder.appendChild(makeEl('div', { class: 'flist-wb-backup-folder-empty', text: '—' }));
+        } else {
+          entries.forEach((s) => folder.appendChild(renderRow(s)));
+        }
+        listSlot.appendChild(folder);
+      });
+      if (preRestores.length > 0) {
+        const folder = makeEl('div', { class: 'flist-wb-backup-folder' });
+        const head = makeEl('div', { class: 'flist-wb-backup-folder-h' });
+        head.appendChild(makeEl('span', { class: 'flist-wb-backup-folder-title', text: 'Pre-restore safety backups' }));
+        head.appendChild(makeEl('span', { class: 'flist-wb-backup-folder-count', text: String(preRestores.length) }));
+        folder.appendChild(head);
+        preRestores.forEach((s) => folder.appendChild(renderRow(s)));
+        listSlot.appendChild(folder);
+      }
+    };
+
     const renderSnapshots = async () => {
       selected = null;
       loadBtn.disabled = true;
@@ -1558,43 +1694,18 @@
       listSlot.appendChild(makeEl('div', { text: 'Loading snapshots…', style: 'color:#8a93a8;padding:8px 0;' }));
 
       const res = await snapshotsList(sourceCharacter);
-      listSlot.innerHTML = '';
       if (!res.ok) {
+        listSlot.innerHTML = '';
         listSlot.appendChild(makeEl('div', { class: 'flist-wb-warn-box', text: explainError(res) }));
         return;
       }
-      const snapshots = res.snapshots || [];
-      if (snapshots.length === 0) {
-        listSlot.appendChild(makeEl('div', {
-          class: 'flist-wb-info-box',
-          text: `Workbench has no snapshots for "${sourceCharacter}". Pull or back up first, or pick another character.`,
-        }));
-        return;
-      }
-      snapshots.forEach((s) => {
-        const row = makeEl('div', { class: 'flist-wb-snapshot-row' });
-        const kindClass = String(s.kind || '').replace(/[^a-z-]/gi, '');
-        row.appendChild(makeEl('span', {
-          class: `flist-wb-snapshot-kind ${kindClass}`,
-          text: KIND_LABEL[s.kind] || s.kind || '?',
-        }));
-        row.appendChild(makeEl('span', { text: s.label || s.id }));
-        row.appendChild(makeEl('span', {
-          class: 'flist-wb-snapshot-meta',
-          text: `${s.image_count || 0} images · ${fmtRelative(s.created_at)}`,
-        }));
-        row.addEventListener('click', () => {
-          listSlot.querySelectorAll('.flist-wb-snapshot-row').forEach((r) => r.classList.remove('selected'));
-          row.classList.add('selected');
-          selected = s;
-          loadBtn.disabled = false;
-        });
-        listSlot.appendChild(row);
-      });
+      snapshotsCache = res.snapshots || [];
+      renderListContent();
     };
 
     select.addEventListener('change', () => {
       sourceCharacter = select.value || archived[0]?.name;
+      snapshotsCache = null;
       renderWarning();
       renderSnapshots();
     });
