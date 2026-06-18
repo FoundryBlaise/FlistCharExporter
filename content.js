@@ -723,15 +723,27 @@
     return mismatches;
   }
 
+  // F-list's <textarea> serialises with CRLF on Windows browsers (the
+  // default behaviour per HTML5: textareas normalise to the platform's
+  // newline on .value access). Workbench snapshots use LF — that's what
+  // the F-list character-data.php JSON returns. Comparing them raw made
+  // the restore dialog falsely report "+N chars · description differs"
+  // where N == the line-break count. Strip CRs before comparing.
+  // Lengths shown in the dialog use the normalised forms too so a "no
+  // diff" outcome doesn't paradoxically show two different char counts.
+  function _normaliseNewlines(s) {
+    return typeof s === 'string' ? s.replace(/\r\n/g, '\n').replace(/\r/g, '\n') : '';
+  }
+
   // Diff the working-copy data against the current edit-form state so the
   // restore dialog can dim unchanged sections and show edit magnitudes.
   // current is whatever extractCharacterFormState() returns on the same page.
   function computeRestoreDiff(zipData, current) {
     const zd = zipData || {};
-    const zDesc = zd.character?.description || '';
-    const cDesc = current.character?.description || '';
-    const zTitle = zd.character?.customTitle || '';
-    const cTitle = current.character?.customTitle || '';
+    const zDesc = _normaliseNewlines(zd.character?.description || '');
+    const cDesc = _normaliseNewlines(current.character?.description || '');
+    const zTitle = _normaliseNewlines(zd.character?.customTitle || '');
+    const cTitle = _normaliseNewlines(current.character?.customTitle || '');
 
     const description = {
       changed: zDesc !== cDesc || zTitle !== cTitle,
