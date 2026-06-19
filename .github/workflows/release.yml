@@ -1,0 +1,140 @@
+# Packages the unpacked extension into a versioned ZIP on every tag
+# matching v*, attaches it to a GitHub Release with a SHA256SUMS file.
+# Static MV3 files — no JS build step — so ubuntu-latest + zip is all
+# we need.
+#
+# NO Chrome Web Store / Firefox AMO submission. Users install the ZIP
+# manually via about:debugging (Firefox) or chrome://extensions
+# Developer-mode → Load unpacked. Web-Store submission stays a separate
+# decision; not in scope for this workflow.
+#
+# Trigger:
+#   git tag v0.1.1 && git push origin v0.1.1
+#
+# Manual run (no tag, no Release published — just an artifact on the
+# workflow run for smoke-testing pipeline changes):
+#   gh workflow run release.yml
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Tag-driven version: refs/tags/v0.1.1 → 0.1.1. Falls back to
+      # manifest.json's version for manual workflow_dispatch runs so
+      # the artifact still has a sensible name when we're just smoke-
+      # testing the pipeline.
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            version=$(jq -r .version manifest.json)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "zip=flist-workbench-extension-${version}.zip" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version"
+
+      # Patch manifest.json's version field to match the tag (or leave
+      # it alone on workflow_dispatch). Browsers reject a mismatch
+      # between the install-time version string and the manifest, so
+      # the tag is the source of truth on a tag-triggered build.
+      - name: Sync manifest version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tmp=$(mktemp)
+          jq --arg v "${{ steps.ver.outputs.version }}" '.version = $v' manifest.json > "$tmp"
+          mv "$tmp" manifest.json
+          jq .version manifest.json
+
+      # Package only the runtime files. Source docs (README, USERSCRIPT
+      # notes) + Tampermonkey-only userscript variant + sample fixtures
+      # + this workflow file itself stay out of the user-facing ZIP.
+      # If the file list ever drifts (new dir, new file, removed file),
+      # this is the one place to update.
+      - name: Build ZIP
+        shell: bash
+        run: |
+          zip -r "${{ steps.ver.outputs.zip }}" \
+            manifest.json \
+            background.js \
+            content.js \
+            content.css \
+            pageworld.js \
+            popup.html \
+            popup.js \
+            icons \
+            vendor \
+            -x "vendor/jszip-LICENSE.md"
+          ls -lh "${{ steps.ver.outputs.zip }}"
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          sha256sum "${{ steps.ver.outputs.zip }}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # Manual runs (workflow_dispatch) upload to the run for smoke
+      # download. No Release is published. Useful when iterating on the
+      # workflow itself.
+      - name: Upload artifacts to run
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flist-workbench-extension
+          path: |
+            ${{ steps.ver.outputs.zip }}
+            SHA256SUMS.txt
+          if-no-files-found: error
+
+      # Tag pushes publish a real Release. Body points at the install
+      # guide so a fresh download lands somewhere actionable.
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: F-list Workbench Extension ${{ steps.ver.outputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          body: |
+            **Unpacked browser extension.** Install manually:
+
+            **Firefox** — `about:debugging` → This Firefox → Load
+            Temporary Add-on → pick `manifest.json` from the extracted
+            ZIP. Unsigned XPI signing is a separate step; for now this
+            ZIP is for Developer-mode installs.
+
+            **Chrome / Edge** — `chrome://extensions` → enable
+            Developer mode → Load unpacked → point at the extracted
+            folder.
+
+            After install: open the extension's popup and pair with
+            F-list Workbench (sidecar must be running). Then visit
+            `https://www.f-list.net/character_edit.php?character=<your-character>`
+            and use the **Restore from Workbench** button.
+
+            Not submitted to Chrome Web Store / Firefox AMO — this is
+            the unsigned dev distribution.
+
+            `SHA256SUMS.txt` carries the sha256 of the ZIP for download
+            verification.
+          files: |
+            ${{ steps.ver.outputs.zip }}
+            SHA256SUMS.txt
