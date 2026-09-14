@@ -73,12 +73,31 @@
     return { overlay, modal, body: bodyEl, footer: footerEl, close: () => overlay.remove() };
   }
 
+  // Toasts float over the top-right of F-list's own page, where its
+  // controls live. Every one of them goes away on its own, and every
+  // one can be dismissed early — a box that sits there permanently
+  // stops being a message and becomes something covering the buttons
+  // you are trying to click.
+  const TOAST_MAX_MS = 25000;
+
   function toast({ title, message, kind = 'info', durationMs = 5000 }) {
     const el = makeEl('div', { class: `flist-wb-toast ${kind}` });
     if (title) el.appendChild(makeEl('div', { class: 'flist-wb-toast-title', text: title }));
     el.appendChild(makeEl('div', { text: message }));
+    const close = makeEl('button', {
+      class: 'flist-wb-toast-close',
+      type: 'button',
+      text: '×',
+    });
+    close.title = 'Dismiss';
+    close.addEventListener('click', () => el.remove());
+    el.appendChild(close);
     document.body.appendChild(el);
-    if (durationMs > 0) setTimeout(() => el.remove(), durationMs);
+    // 0 used to mean "stay forever". It now means "as long as a toast
+    // is ever allowed to stay", which is long enough to read a long
+    // message twice.
+    const ms = durationMs > 0 ? Math.min(durationMs, TOAST_MAX_MS) : TOAST_MAX_MS;
+    setTimeout(() => el.remove(), ms);
     return el;
   }
 
@@ -1127,6 +1146,38 @@
     return Array.from(candidates);
   }
 
+  // Report the save to Workbench so it can re-pull Live.
+  //
+  // Only Live: the Workbench is the user's own draft and may have moved
+  // on while the upload happened. Nothing here touches it, and the app
+  // side does not either.
+  //
+  // We report the click rather than a confirmed save, because a
+  // confirmed save is not something this page reliably tells us: F-list
+  // may submit through its own handler, and where it navigates
+  // afterwards is not ours to rely on. The cost of being wrong is a
+  // pull that finds the profile unchanged — a read, and a cheap one.
+  // The cost of waiting for certainty is Live silently disagreeing with
+  // the site until the user next pulls by hand.
+  let saveWatcher = null;
+
+  function watchForSave(character) {
+    if (saveWatcher) document.removeEventListener('click', saveWatcher, true);
+    const onClick = (e) => {
+      if (isInsideOurUi(e.target)) return;
+      const t = e.target.closest && e.target.closest(
+        'input[type="submit"], button[type="submit"], button:not([type]), button, input[type="button"]'
+      );
+      if (!t || !findSaveButtons().includes(t)) return;
+      document.removeEventListener('click', onClick, true);
+      saveWatcher = null;
+      diag('save clicked after restore — asking Workbench to re-pull Live');
+      sendBg({ type: 'restore_saved', character });
+    };
+    saveWatcher = onClick;
+    document.addEventListener('click', onClick, true);
+  }
+
   function isInsideOurUi(target) {
     if (!target || !target.closest) return false;
     return !!target.closest(
@@ -1441,6 +1492,11 @@
 
       const character = getCharacterName();
       sendBg({ type: 'restore_done', character });
+      // From here on, a click on F-list's own Save button means the
+      // profile we just wrote into the form is about to become the
+      // published one — which makes Workbench's copy of Live stale the
+      // moment it lands.
+      watchForSave(character);
 
       if (outcome === 'completed') {
         const saveBtns = findSaveButtons();
@@ -1473,9 +1529,13 @@
     }
   }
 
+  // Matches what the app's sidebar calls these. Working sets were a
+  // user-facing concept there — create, name, keep several — and are
+  // not any more: every character has exactly one editable copy called
+  // the Workbench. The `set` wire kind stayed, the word did not.
   const KIND_LABEL = {
-    live: 'From F-list',
-    set: 'Working set',
+    live: 'Live on F-List',
+    set: 'Workbench',
     backup: 'Backup',
     'pre-restore': 'Pre-restore',
   };
@@ -1550,16 +1610,18 @@
     const warningSlot = makeEl('div');
     modal.body.appendChild(warningSlot);
 
-    // Tab strip: Working Sets / Backups. Sets first because that's
-    // what gets used most often. Switching between tabs re-renders
-    // the row list from the cached snapshot response — one network
-    // round-trip per character pick, not per tab click.
+    // Tab strip: Workbench / Backups. The first tab holds what the
+    // app's character zone shows — Live on F-List and the Workbench —
+    // and it comes first because that is what gets used most often.
+    // Switching between tabs re-renders the row list from the cached
+    // snapshot response: one network round-trip per character pick,
+    // not per tab click.
     const tabStrip = makeEl('div', { class: 'flist-wb-tabs', role: 'tablist' });
     const tabSets = makeEl('button', {
       class: 'flist-wb-tab flist-wb-tab-active',
       type: 'button',
       role: 'tab',
-      text: 'Working sets',
+      text: 'Workbench',
     });
     const tabBackups = makeEl('button', {
       class: 'flist-wb-tab',
@@ -1641,15 +1703,14 @@
 
       if (activeTab === 'sets') {
         const sets = snapshots.filter((s) => s.kind === 'set');
-        // Also surface the live ("From F-list") entry on the Working
-        // Sets tab — it lives next to the user's working sets in the
-        // app's sidebar, so it belongs in the same tab here.
+        // Live belongs on this tab too: in the app these are the two
+        // rows of the character zone, one above the other.
         const live = snapshots.find((s) => s.kind === 'live');
         if (live) listSlot.appendChild(renderRow(live));
         if (sets.length === 0 && !live) {
           listSlot.appendChild(makeEl('div', {
             class: 'flist-wb-info-box',
-            text: `No working sets for "${sourceCharacter}" yet. Open the character in Workbench and click + New working set.`,
+            text: `Nothing to restore for "${sourceCharacter}" yet. Open the character in Workbench and pull it — the Workbench appears as soon as there is something to copy from.`,
           }));
           return;
         }
@@ -1668,7 +1729,7 @@
       if (backups.length === 0 && preRestores.length === 0) {
         listSlot.appendChild(makeEl('div', {
           class: 'flist-wb-info-box',
-          text: `No backups for "${sourceCharacter}" yet. In Workbench: right-click the character → Back up now.`,
+          text: `No backups for "${sourceCharacter}" yet. In Workbench: right-click the Workbench row → Back up the Workbench.`,
         }));
         return;
       }

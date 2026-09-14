@@ -167,6 +167,23 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: true });
           return;
         }
+        // The user pressed Save on f-list.net. Workbench re-pulls so
+        // its read-only Live copy matches the site again; it leaves the
+        // Workbench draft alone. Fire-and-forget — the app answers
+        // straight away and does the pull in the background, and a
+        // failure here must not disturb a page that is mid-submit.
+        case "restore_saved": {
+          try {
+            await sidecarFetch("/restore/saved", {
+              method: "POST",
+              body: { character: msg.character },
+            });
+          } catch (err) {
+            console.warn("[workbench] post-save pull request failed", err);
+          }
+          sendResponse({ ok: true });
+          return;
+        }
         case "unpair": {
           await clearToken();
           sendResponse({ ok: true });

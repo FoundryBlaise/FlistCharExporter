@@ -426,6 +426,8 @@
   position: fixed;
   top: 80px;
   right: 24px;
+  /* Room for the dismiss button in the corner. */
+  padding-right: 34px;
   background: #1f2435;
   color: #e3e7f0;
   border: 1px solid #3a4258;
@@ -443,5 +445,23 @@
 .flist-wb-toast.success { border-left-color: #7ab06f; }
 .flist-wb-toast.error { border-left-color: #d05a51; }
 .flist-wb-toast.warn { border-left-color: #d8a050; }
+
+.flist-wb-toast-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: transparent;
+  border: none;
+  color: #8792ab;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.flist-wb-toast-close:hover {
+  background: #2a3145;
+  color: #e3e7f0;
+}
 
 .flist-wb-toast-title { font-weight: 600; margin-bottom: 4px; }
