@@ -172,6 +172,22 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         // Workbench draft alone. Fire-and-forget — the app answers
         // straight away and does the pull in the background, and a
         // failure here must not disturb a page that is mid-submit.
+        // What F-list named the images we uploaded. Fire-and-forget:
+        // the restore has finished either way, and a failure here only
+        // costs the next restore its ability to tell the pictures
+        // apart — not the user's work.
+        case "restore_image_ids": {
+          try {
+            await sidecarFetch("/restore/image-ids", {
+              method: "POST",
+              body: { character: msg.character, mapping: msg.mapping },
+            });
+          } catch (err) {
+            console.warn("[workbench] reporting image ids failed", err);
+          }
+          sendResponse({ ok: true });
+          return;
+        }
         case "restore_saved": {
           try {
             await sidecarFetch("/restore/saved", {

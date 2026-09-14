@@ -1492,6 +1492,23 @@
 
       const character = getCharacterName();
       sendBg({ type: 'restore_done', character });
+      // Tell Workbench what F-list called the images we just uploaded.
+      // We are the only party that ever sees both names: the app keys
+      // its own uploads by a hash of their bytes, because they have no
+      // F-list id until this moment. Without this the two sides can
+      // never match the same picture again — the next restore deletes
+      // the whole gallery and re-uploads it to change one image, and
+      // every pull leaves a byte-identical twin on disk.
+      const idMapping = {};
+      uploadedIdByFilename.forEach((newId, filename) => {
+        // 'images/local-f3f0378f.png' -> 'local-f3f0378f'
+        const base = String(filename).split('/').pop() || '';
+        const localId = base.replace(/\.[^.]+$/, '');
+        if (localId.startsWith('local-') && newId) idMapping[localId] = newId;
+      });
+      if (Object.keys(idMapping).length > 0) {
+        sendBg({ type: 'restore_image_ids', character, mapping: idMapping });
+      }
       // From here on, a click on F-list's own Save button means the
       // profile we just wrote into the form is about to become the
       // published one — which makes Workbench's copy of Live stale the
