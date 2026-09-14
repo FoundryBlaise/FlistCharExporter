@@ -1398,8 +1398,31 @@
 
       if (!skipImages) {
         const current = extractImageData();
-        const { willDelete } = diffImageSets(current.images, backupImages);
+        // Workbench lists gallery rows it could not pack — an image
+        // whose bytes are missing locally. Those rows are absent from
+        // the backup, and treating absence as "the user removed it"
+        // would delete pictures from the profile that nobody asked to
+        // lose. So when the backup admits it is incomplete, we add and
+        // reorder but never delete.
+        const backupIncomplete = (data?.images?.missing || []).length > 0;
+        const { willDelete: wouldDelete } = diffImageSets(current.images, backupImages);
+        const willDelete = backupIncomplete ? [] : wouldDelete;
         counts.deletePlanned = willDelete.length;
+        if (backupIncomplete) {
+          diag(
+            `backup is missing ${data.images.missing.length} image(s); ` +
+            `skipping ${wouldDelete.length} deletion(s) to avoid removing ` +
+            'pictures the backup cannot vouch for'
+          );
+          toast({
+            title: 'Deletions skipped',
+            message:
+              `Workbench could not include ${data.images.missing.length} image(s) in this ` +
+              'restore, so nothing was deleted from the profile — only additions and ' +
+              'ordering were applied. Open the Images tab in Workbench; it repairs this by itself.',
+            kind: 'warn',
+          });
+        }
 
         for (let i = 0; i < willDelete.length; i++) {
           if (cancelToken.cancelled) { outcome = 'cancelled'; break; }
