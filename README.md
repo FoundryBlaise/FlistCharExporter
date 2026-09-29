@@ -46,9 +46,15 @@ session. F-list cookies stay in your normal browser, untouched.
 
 ## Install (Chrome / Chromium / Edge — Developer mode)
 
+Workbench ships a tested release of this extension. **Settings →
+Security → Browser extension** opens its folder and copies the path;
+load that folder rather than a download of your own, and Workbench
+keeps it at the version it was built against.
+
 1. Open `chrome://extensions`.
 2. Toggle **Developer mode** (top right).
-3. **Load unpacked** → pick this folder (`FlistCharExporter/`).
+3. **Load unpacked** → pick the folder from Workbench's settings (or
+   this folder, when working on the extension itself).
 4. Pin the extension to the toolbar for easy pairing.
 
 ## Install (Firefox — unsigned, temporary)

@@ -26,6 +26,10 @@ async function sidecarFetch(
     const token = await getToken();
     if (!token) return { ok: false, status: 401, error: "not_paired" };
     headers["X-Workbench-Auth"] = token;
+    // Workbench ships this extension as an unpacked folder and replaces
+    // it on app updates; the browser only picks that up on a reload.
+    // Telling the app what is actually running lets it say so.
+    headers["X-Workbench-Extension-Version"] = chrome.runtime.getManifest().version;
   }
   let res;
   try {
